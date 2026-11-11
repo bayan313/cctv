@@ -1,10 +1,12 @@
 import os
 import sys
+import io
 import json
 import time
 import socket
 import asyncio
 import secrets
+import zipfile
 import subprocess
 from pathlib import Path
 from datetime import datetime
@@ -18,7 +20,7 @@ except Exception:
 
 import requests
 from fastapi import FastAPI, Request, Response, HTTPException, Depends, UploadFile, File, Form, Header, Query
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import APIKeyCookie
 import uvicorn
@@ -28,6 +30,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = BASE_DIR / "config.json"
 RECORDINGS_DIR = BASE_DIR / "server" / "recordings"
 STATIC_DIR = BASE_DIR / "server" / "static"
+CLIENT_DIR = BASE_DIR / "client"
 
 RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -109,13 +112,13 @@ def send_telegram_video(video_path: Path, caption: str):
 
 async def auto_updater_task():
     """Checks GitHub for updates every 30 minutes and applies them safely."""
-    await asyncio.sleep(15) # Wait after boot
-    print("[AutoUpdater] Safe GitHub update checker started.")
+    await asyncio.sleep(15)
+    print("[AutoUpdater] Safe GitHub update checker active.")
     while True:
         try:
             loop = asyncio.get_event_loop()
             def run_git_check():
-                res_fetch = subprocess.run(["git", "fetch", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=20)
+                subprocess.run(["git", "fetch", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=20)
                 res_status = subprocess.run(["git", "status", "-uno"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10)
                 if "Your branch is behind" in res_status.stdout:
                     print("[AutoUpdater] Update found on GitHub! Safely pulling...")
@@ -126,17 +129,16 @@ async def auto_updater_task():
             has_update = await loop.run_in_executor(None, run_git_check)
             if has_update:
                 send_telegram_message("🔄 *System Update:* Server updated to latest version from GitHub.")
-        except Exception as e:
-            # print(f"[AutoUpdater] Check skipped: {e}")
+        except Exception:
             pass
 
-        await asyncio.sleep(1800) # Every 30 mins
+        await asyncio.sleep(1800)
 
 # ----------------- TELEGRAM & CLEANUP TASKS -----------------
 
 async def telegram_bot_poller():
     last_update_id = 0
-    print("[Telegram] Bot listener started.")
+    print("[Telegram] Bot listener active.")
     while True:
         try:
             cfg = load_config()
@@ -294,7 +296,6 @@ def register_client(request: Request, payload: dict):
     if device_id in registered:
         assigned_name = registered[device_id]
     else:
-        # Assign next available name
         used_names = set(registered.values())
         assigned_name = None
         for name in DEFAULT_PC_NAMES:
@@ -320,6 +321,97 @@ def register_client(request: Request, payload: dict):
         "fps": cfg.get("fps", 10),
         "chunk_minutes": cfg.get("chunk_minutes", 5)
     }
+
+# ----------------- WEB DOWNLOAD & INSTALL ENDPOINTS -----------------
+
+@app.get("/api/download/recorder.py")
+def download_recorder_py():
+    """Serves the latest client recorder script."""
+    rec_file = CLIENT_DIR / "recorder.py"
+    if rec_file.exists():
+        return FileResponse(rec_file, media_type="text/x-python", filename="recorder.py")
+    raise HTTPException(status_code=404, detail="recorder.py not found")
+
+@app.get("/api/download/setup-script")
+def download_setup_script(request: Request, session: str = Depends(verify_session)):
+    """Generates an intelligent 1-click batch script that installs the software on this PC."""
+    lan_ip = get_lan_ip()
+    port = load_config().get("server_port", 8899)
+    # If accessed from custom host header, use that
+    host_header = request.headers.get("host")
+    server_base = f"http://{host_header}" if host_header else f"http://{lan_ip}:{port}"
+
+    script_content = f"""@echo off
+setlocal
+title Albayan Study Monitor - Auto Installer
+echo ========================================================
+echo   ALBAYAN LAB MONITOR - 1-CLICK CLIENT INSTALLER
+echo ========================================================
+echo.
+
+set TARGET_DIR=%LOCALAPPDATA%\\AlbayanMonitor
+if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
+if not exist "%TARGET_DIR%\\client" mkdir "%TARGET_DIR%\\client"
+if not exist "%TARGET_DIR%\\client\\temp_records" mkdir "%TARGET_DIR%\\client\\temp_records"
+
+echo [1/4] Downloading latest software from server...
+powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{server_base}/api/download/recorder.py', '%TARGET_DIR%\\client\\recorder.py')"
+
+echo.
+echo [2/4] Verifying Python and installing dependencies...
+python -m pip install mss imageio imageio-ffmpeg requests truststore pillow --quiet
+
+echo.
+echo [3/4] Registering PC name (albayan 1, 2, 3, or 4)...
+python -c "import urllib.request, json, uuid; dev_id=str(uuid.getnode()); req=urllib.request.Request('{server_base}/api/client/register', data=json.dumps({{'device_id':dev_id}}).encode(), headers={{'Content-Type':'application/json'}}); res=urllib.request.urlopen(req); data=json.loads(res.read().decode()); open(r'%TARGET_DIR%\\client\\client_config.json', 'w').write(json.dumps(data, indent=2)); print('>> Successfully registered as: ' + data.get('computer_name', 'albayan'))"
+
+echo.
+echo [4/4] Setting up Windows Auto-Startup...
+set STARTUP_DIR=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup
+set VBS_FILE=%STARTUP_DIR%\\StudyMonitorLauncher.vbs
+echo Set WshShell = CreateObject("WScript.Shell") > "%VBS_FILE%"
+echo WshShell.Run ""pythonw "" ^& ""%TARGET_DIR%\client\recorder.py"" , 0, False >> "%VBS_FILE%"
+
+echo.
+echo Starting Screen Monitor in Background...
+start "" pythonw "%TARGET_DIR%\\client\\recorder.py"
+
+echo.
+echo ========================================================
+echo   [SUCCESS] INSTALLED SUCCESSFULLY!
+echo   This PC is now active and monitored!
+echo ========================================================
+echo.
+pause
+"""
+    return Response(
+        content=script_content,
+        media_type="application/bat",
+        headers={"Content-Disposition": "attachment; filename=albayan_setup.bat"}
+    )
+
+@app.get("/api/download/client-zip")
+def download_client_zip(session: str = Depends(verify_session)):
+    """Serves a complete standalone zip package."""
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        rec_path = CLIENT_DIR / "recorder.py"
+        one_click = BASE_DIR / "ONE_CLICK_INSTALL.bat"
+        cfg_path = BASE_DIR / "config.json"
+        
+        if rec_path.exists():
+            zf.write(rec_path, arcname="client/recorder.py")
+        if one_click.exists():
+            zf.write(one_click, arcname="ONE_CLICK_INSTALL.bat")
+        if cfg_path.exists():
+            zf.write(cfg_path, arcname="config.json")
+
+    zip_buffer.seek(0)
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=albayan_monitor_full.zip"}
+    )
 
 # ----------------- WEB ROUTES -----------------
 
@@ -362,7 +454,6 @@ def get_system_status(session: str = Depends(verify_session)):
     
     computers_list = []
     online_count = 0
-    # Include all 4 albayan PCs by default
     all_names = list(DEFAULT_PC_NAMES)
     for name in active_computers:
         if name not in all_names:
@@ -656,6 +747,32 @@ def get_dashboard_html():
   </header>
 
   <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- [INSTALL] WEB DOWNLOAD & INSTALL BANNER (AFTER PASSWORD) -->
+    <div class="bg-gradient-to-r from-indigo-950/80 via-slate-900 to-indigo-950/80 border border-indigo-500/40 rounded-2xl p-6 mb-8 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl">
+      <div class="flex items-center gap-4">
+        <div class="w-14 h-14 bg-gradient-to-tr from-indigo-600 to-cyan-500 rounded-2xl flex items-center justify-center text-white text-2xl shadow-lg shadow-indigo-600/30 shrink-0">
+          <i class="fa-solid fa-cloud-arrow-down"></i>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h3 class="text-lg font-bold text-white tracking-tight">Install Software on this PC</h3>
+            <span class="bg-indigo-500/20 text-indigo-300 text-[11px] font-mono px-2 py-0.5 rounded border border-indigo-500/30">1-Click Setup</span>
+          </div>
+          <p class="text-xs text-slate-300 mt-1 max-w-xl">
+            ലാബിലെ മറ്റേതെങ്കിലും കമ്പ്യൂട്ടറിൽ (PC 2, PC 3, PC 4) വെബ്സൈറ്റ് തുറന്ന ശേഷം താഴെയുള്ള ബട്ടൺ ക്ലിക്ക് ചെയ്താൽ സോഫ്റ്റ്‌വെയർ ഉടൻ ഇൻസ്റ്റാൾ ആകും!
+          </p>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 shrink-0">
+        <a href="/api/download/setup-script" download="albayan_setup.bat" class="px-5 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-600/30 transition flex items-center gap-2">
+          <i class="fa-solid fa-bolt text-amber-300"></i> Download 1-Click Installer (.bat)
+        </a>
+        <a href="/api/download/client-zip" download="albayan_monitor_full.zip" class="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold border border-slate-700 transition flex items-center gap-2">
+          <i class="fa-solid fa-file-zipper"></i> Full Zip Package
+        </a>
+      </div>
+    </div>
+
     <!-- Lab Computers Status Cards (albayan 1, 2, 3, 4) -->
     <div class="mb-8">
       <div class="flex items-center justify-between mb-3">
@@ -972,6 +1089,6 @@ if __name__ == "__main__":
     print(f" Web Dashboard:     http://localhost:{port}")
     print(f" Lab Network (LAN): http://{lan_ip}:{port}")
     print(" Master Password:   albayan@2026")
-    print(" Auto-Update:       Active (Safe GitHub sync)")
+    print(" Web Install:       Available on dashboard")
     print("=" * 60)
     uvicorn.run(app, host=host, port=port)

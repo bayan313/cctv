@@ -73,6 +73,53 @@ def logout(response: Response, session_token: Optional[str] = Depends(cookie_sch
     response.delete_cookie("session_token")
     return {"ok": True}
 
+@app.get("/api/download/setup-script")
+def download_setup_script(session: str = Depends(verify_session)):
+    """Downloads installer from GitHub repository directly."""
+    script_content = """@echo off
+setlocal
+title Albayan Study Monitor - Auto Installer
+echo ========================================================
+echo   ALBAYAN LAB MONITOR - 1-CLICK CLIENT INSTALLER
+echo ========================================================
+echo.
+
+set TARGET_DIR=%LOCALAPPDATA%\\AlbayanMonitor
+if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
+if not exist "%TARGET_DIR%\\client" mkdir "%TARGET_DIR%\\client"
+if not exist "%TARGET_DIR%\\client\\temp_records" mkdir "%TARGET_DIR%\\client\\temp_records"
+
+echo [1/3] Downloading latest software from GitHub...
+powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('https://raw.githubusercontent.com/bayan313/cctv/main/client/recorder.py', '%TARGET_DIR%\\client\\recorder.py')"
+
+echo.
+echo [2/3] Installing dependencies...
+python -m pip install mss imageio imageio-ffmpeg requests truststore pillow --quiet
+
+echo.
+echo [3/3] Setting up Windows Auto-Startup...
+set STARTUP_DIR=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup
+set VBS_FILE=%STARTUP_DIR%\\StudyMonitorLauncher.vbs
+echo Set WshShell = CreateObject("WScript.Shell") > "%VBS_FILE%"
+echo WshShell.Run "pythonw """ ^& "%TARGET_DIR%\\client\\recorder.py""" , 0, False >> "%VBS_FILE%"
+
+echo.
+echo Starting Screen Monitor in Background...
+start "" pythonw "%TARGET_DIR%\\client\\recorder.py"
+
+echo.
+echo ========================================================
+echo   [SUCCESS] INSTALLED SUCCESSFULLY!
+echo ========================================================
+echo.
+pause
+"""
+    return Response(
+        content=script_content,
+        media_type="application/bat",
+        headers={"Content-Disposition": "attachment; filename=albayan_setup.bat"}
+    )
+
 @app.get("/api/status")
 def get_status(session: str = Depends(verify_session)):
     updates = get_telegram_updates()
@@ -228,6 +275,29 @@ def get_dashboard_html():
   </header>
 
   <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- ⚡ WEB INSTALL BANNER (AFTER PASSWORD) -->
+    <div class="bg-gradient-to-r from-indigo-950/80 via-slate-900 to-indigo-950/80 border border-indigo-500/40 rounded-2xl p-6 mb-8 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl">
+      <div class="flex items-center gap-4">
+        <div class="w-14 h-14 bg-gradient-to-tr from-indigo-600 to-cyan-500 rounded-2xl flex items-center justify-center text-white text-2xl shadow-lg shadow-indigo-600/30 shrink-0">
+          <i class="fa-solid fa-cloud-arrow-down"></i>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h3 class="text-lg font-bold text-white tracking-tight">Install Software on this PC</h3>
+            <span class="bg-indigo-500/20 text-indigo-300 text-[11px] font-mono px-2 py-0.5 rounded border border-indigo-500/30">1-Click</span>
+          </div>
+          <p class="text-xs text-slate-300 mt-1 max-w-xl">
+            ക്ലൗഡിൽ നിന്ന് ഈ കമ്പ്യൂട്ടറിൽ ഇൻസ്റ്റാൾ ചെയ്യാൻ താഴെയുള്ള ബട്ടൺ ക്ലിക്ക് ചെയ്ത് ഫയൽ റൺ ചെയ്യുക.
+          </p>
+        </div>
+      </div>
+      <div class="flex items-center gap-3 shrink-0">
+        <a href="/api/download/setup-script" download="albayan_setup.bat" class="px-5 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-600/30 transition flex items-center gap-2">
+          <i class="fa-solid fa-bolt text-amber-300"></i> Download 1-Click Installer (.bat)
+        </a>
+      </div>
+    </div>
+
     <div class="mb-8">
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-sm uppercase font-semibold text-slate-400 tracking-wider">
@@ -281,22 +351,6 @@ def get_dashboard_html():
             <p class="text-[11px] text-slate-400 mt-1 font-mono">Computer 4</p>
           </div>
           <span class="text-[11px] font-semibold text-emerald-400">10 FPS</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Info Banner for Vercel -->
-    <div class="bg-indigo-950/40 border border-indigo-500/30 rounded-2xl p-6 mb-8">
-      <div class="flex items-start gap-4">
-        <div class="w-10 h-10 rounded-xl bg-indigo-600/30 flex items-center justify-center text-indigo-400 text-xl shrink-0">
-          <i class="fa-solid fa-cloud-arrow-up"></i>
-        </div>
-        <div>
-          <h3 class="text-base font-bold text-white">Vercel Cloud Portal Active</h3>
-          <p class="text-xs text-slate-300 mt-1 leading-relaxed">
-            Connected to <strong>@my_library_data_bot</strong> and Albayan Lab Network.
-            Password: <strong>albayan@2026</strong>. Auto-updates sync continuously from GitHub.
-          </p>
         </div>
       </div>
     </div>
