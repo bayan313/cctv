@@ -1,10 +1,10 @@
 @echo off
 setlocal
-title Albayan CCTV Study Monitor - One Click Setup
+title Albayan CCTV Study Monitor - Client Setup
 cd /d "%~dp0"
 
 echo ========================================================
-echo   ALBAYAN LAB CCTV MONITOR - 1-CLICK AUTOMATIC SETUP
+echo   ALBAYAN LAB CCTV MONITOR - AUTOMATIC CLIENT SETUP
 echo ========================================================
 echo.
 echo [1/3] Detecting Server and Auto-Assigning Computer Name...
@@ -30,6 +30,7 @@ echo This PC will now:
 echo   - Start automatically whenever the computer turns ON
 echo   - Wait 10 seconds and display the popup warning
 echo   - Capture screenshots every 5 minutes (CCTV Timeline)
+echo   - Alert user with subtle bottom-right toast (no disturbance)
 echo   - Transmit live screen feed to Web CCTV Dashboard
 echo   - Auto-update safely whenever updates are pushed to GitHub!
 echo ========================================================

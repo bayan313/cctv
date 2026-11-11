@@ -19,7 +19,7 @@ Web Portal Password: **`albayan@2026`**
    - CCTV മോണിറ്ററിന് താഴെയുള്ള **Timeline Scrubber / "Play Day's Reel"** ബട്ടൺ ക്ലിക്ക് ചെയ്താൽ, അന്നേ ദിവസം മുഴുവൻ കുട്ടികൾ കമ്പ്യൂട്ടറിൽ എന്താണ് ചെയ്തതെന്ന് നിമിഷങ്ങൾക്കുള്ളിൽ CCTV ടൈംലാപ്സ് വീഡിയോ പോലെ കണ്ട് തീർക്കാം!
 
 3. **ഓട്ടോമാറ്റിക് PC Naming (`albayan 1, 2, 3, 4`):**
-   - ഓരോ കമ്പ്യൂട്ടറിലും `ONE_CLICK_INSTALL.bat` ഡബിൾ ക്ലിക്ക് ചെയ്താൽ മതി. ഒന്നാമത്തേത് `albayan 1`, രണ്ടാമത്തേത് `albayan 2`, മൂന്നാമത്തേത് `albayan 3`, നാലാമത്തേത് `albayan 4` എന്ന് ഓട്ടോമാറ്റിക് ആയി രജിസ്റ്റർ ആകും.
+   - ഓരോ കമ്പ്യൂട്ടറിലും `INSTALL_CLIENT.bat` ഡബിൾ ക്ലിക്ക് ചെയ്താൽ മതി. ഒന്നാമത്തേത് `albayan 1`, രണ്ടാമത്തേത് `albayan 2`, മൂന്നാമത്തേത് `albayan 3`, നാലാമത്തേത് `albayan 4` എന്ന് ഓട്ടോമാറ്റിക് ആയി രജിസ്റ്റർ ആകും.
 
 4. **10 Seconds Delay & Overt Popup:**
    - കമ്പ്യൂട്ടർ ഓൺ ആയി 10 സെക്കൻഡ് കഴിയുമ്പോൾ സ്ക്രീനിൽ അറിയിപ്പ് വരും:  
@@ -40,7 +40,7 @@ Web Portal Password: **`albayan@2026`**
 
 ### കമ്പ്യൂട്ടർ 1 (Main PC & Server):
 1. [**`RUN_SERVER.bat`**](file:///c:/Users/AL-BAYAN/Documents/albayan%20web/study-monitor/RUN_SERVER.bat) ഡബിൾ ക്ലിക്ക് ചെയ്യുക (സെർവർ റൺ ആകും).
-2. [**`ONE_CLICK_INSTALL.bat`**](file:///c:/Users/AL-BAYAN/Documents/albayan%20web/study-monitor/ONE_CLICK_INSTALL.bat) ഡബിൾ ക്ലിക്ക് ചെയ്യുക.
+2. [**`INSTALL_CLIENT.bat`**](file:///c:/Users/AL-BAYAN/Documents/albayan%20web/study-monitor/INSTALL_CLIENT.bat) ഡബിൾ ക്ലിക്ക് ചെയ്യുക.
 
 ### ബാക്കി കമ്പ്യൂട്ടറുകളിൽ (PC 2, 3, 4):
 * ബ്രൗസറിൽ `http://192.168.1.3:8899` തുറക്കുക.

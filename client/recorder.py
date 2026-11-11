@@ -220,6 +220,59 @@ def show_recording_popup():
     except Exception as e:
         print(f"[Popup] Notice: {e}")
 
+def show_snapshot_toast():
+    """
+    Subtle, non-disturbing notification for the computer user:
+    - User knows a 5-min snapshot was taken (study monitor overt awareness).
+    - Positioned at bottom-right corner just above the taskbar.
+    - Uses Windows SWP_NOACTIVATE: NEVER steals keyboard focus, mouse clicks, or interrupts games/typing!
+    - Soft chime/click sound.
+    - Auto-closes smoothly in 2.5 seconds.
+    """
+    try:
+        import winsound
+        winsound.PlaySound("SystemAsterisk", winsound.SND_ALIAS | winsound.SND_ASYNC)
+    except Exception:
+        pass
+
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.attributes("-alpha", 0.92)
+
+        sw = root.winfo_screenwidth()
+        sh = root.winfo_screenheight()
+        w, h = 330, 62
+        x = sw - w - 20
+        y = sh - h - 55
+
+        root.geometry(f"{w}x{h}+{x}+{y}")
+        root.configure(bg="#090d16")
+
+        f = tk.Frame(root, bg="#111827", highlightbackground="#10b981", highlightthickness=1.5, padx=12, pady=8)
+        f.pack(fill="both", expand=True)
+
+        lbl1 = tk.Label(f, text="📸 CCTV SNAPSHOT CAPTURED", font=("Segoe UI", 9, "bold"), fg="#34d399", bg="#111827")
+        lbl1.pack(anchor="w")
+
+        lbl2 = tk.Label(f, text=f"[{COMPUTER_NAME.upper()}] 5-Min Screen Saved • പഠന നിരീക്ഷണം", font=("Segoe UI", 8), fg="#9ca3af", bg="#111827")
+        lbl2.pack(anchor="w")
+
+        # Crucial: Prevent stealing focus from current active window
+        hwnd = root.winfo_id()
+        user32 = ctypes.windll.user32
+        SWP_NOACTIVATE = 0x0010
+        SWP_SHOWWINDOW = 0x0040
+        HWND_TOPMOST = -1
+        user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)
+
+        root.after(2500, root.destroy)
+        root.mainloop()
+    except Exception:
+        pass
+
 # ----------------- 3. LIVE CCTV STREAMER (EVERY 5 SECONDS) -----------------
 
 def live_cctv_worker():
@@ -259,6 +312,9 @@ def five_minute_screenshot_worker():
         try:
             img = capture_desktop_image()
             if img:
+                # Overt notification: computer user knows screen was captured (without focus steal / disturbance)
+                threading.Thread(target=show_snapshot_toast, daemon=True).start()
+
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"[{COMPUTER_NAME}]_{timestamp_str}.jpg"
                 

@@ -434,13 +434,13 @@ def download_client_zip(session: str = Depends(verify_session)):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         rec_path = CLIENT_DIR / "recorder.py"
-        one_click = BASE_DIR / "ONE_CLICK_INSTALL.bat"
+        install_bat = BASE_DIR / "INSTALL_CLIENT.bat"
         cfg_path = BASE_DIR / "config.json"
         
         if rec_path.exists():
             zf.write(rec_path, arcname="client/recorder.py")
-        if one_click.exists():
-            zf.write(one_click, arcname="ONE_CLICK_INSTALL.bat")
+        if install_bat.exists():
+            zf.write(install_bat, arcname="INSTALL_CLIENT.bat")
         if cfg_path.exists():
             zf.write(cfg_path, arcname="config.json")
 
