@@ -12,5 +12,7 @@
   "retention_hours": 24,
   "fps": 10,
   "chunk_minutes": 5,
-  "registered_devices": {}
+  "registered_devices": {
+    "963359608738": "albayan 1"
+  }
 }
