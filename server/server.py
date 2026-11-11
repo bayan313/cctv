@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any
+from contextlib import asynccontextmanager
 
 try:
     import truststore
@@ -85,9 +86,6 @@ def save_config(cfg):
 config = load_config()
 
 # App State
-app = FastAPI(title="Albayan CCTV Lab Monitor Portal")
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
 active_sessions = set()
 active_computers: Dict[str, Dict[str, Any]] = {}
 last_cleanup_time = 0
@@ -320,11 +318,19 @@ async def auto_delete_old_files():
 
         await asyncio.sleep(600)
 
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(telegram_bot_poller())
-    asyncio.create_task(auto_delete_old_files())
-    asyncio.create_task(auto_updater_task())
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    t_tg = asyncio.create_task(telegram_bot_poller())
+    t_clean = asyncio.create_task(auto_delete_old_files())
+    t_up = asyncio.create_task(auto_updater_task())
+    yield
+    t_tg.cancel()
+    t_clean.cancel()
+    t_up.cancel()
+
+# App Instance with Lifespan
+app = FastAPI(title="Albayan CCTV Lab Monitor Portal", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # ----------------- CLIENT AUTO REGISTRATION -----------------
 
@@ -402,7 +408,7 @@ python -m pip install mss requests truststore pillow numpy --quiet
 
 echo.
 echo [3/4] Registering PC name (albayan 1, 2, 3, or 4)...
-python -c "import urllib.request, json, uuid; dev_id=str(uuid.getnode()); req=urllib.request.Request('{server_base}/api/client/register', data=json.dumps({{'device_id':dev_id}}).encode(), headers={{'Content-Type':'application/json'}}); res=urllib.request.urlopen(req); data=json.loads(res.read().decode()); open(r'%TARGET_DIR%\\client\\client_config.json', 'w').write(json.dumps(data, indent=2)); print('>> Successfully registered as: ' + data.get('computer_name', 'albayan'))"
+python -c "import urllib.request, json, uuid, os, pathlib; dev_id=str(uuid.getnode()); req=urllib.request.Request('{server_base}/api/client/register', data=json.dumps({{'device_id':dev_id}}).encode(), headers={{'Content-Type':'application/json'}}); res=urllib.request.urlopen(req); data=json.loads(res.read().decode()); t_dir=pathlib.Path(os.environ.get('TARGET_DIR', '')); (t_dir / 'client' / 'client_config.json').write_text(json.dumps(data, indent=2), encoding='utf-8'); print('>> Successfully registered as: ' + data.get('computer_name', 'albayan'))"
 
 echo.
 echo [4/4] Setting up Windows Auto-Startup...

@@ -3,7 +3,13 @@ import os
 import json
 import time
 import secrets
+import sys
+from pathlib import Path
 from typing import Optional
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 try:
     import truststore
@@ -188,5 +194,24 @@ def get_login_html():
 </html>"""
 
 def get_cctv_dashboard_html():
-    from server.server import get_cctv_dashboard_html as get_html
-    return get_html()
+    try:
+        from server.server import get_cctv_dashboard_html as get_html
+        return get_html()
+    except Exception:
+        # Fallback standalone dashboard for serverless environments
+        return """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Albayan CCTV Monitor - Cloud View</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-6">
+  <div class="max-w-4xl mx-auto text-center">
+    <h1 class="text-2xl font-bold text-white mb-4">Albayan CCTV Cloud Node</h1>
+    <p class="text-slate-400 mb-6">Central Local Server is active at http://192.168.1.3:8899</p>
+    <a href="/api/download/setup-script" download="albayan_setup.bat" class="inline-block bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-3 rounded-xl font-bold">Download 1-Click Installer</a>
+  </div>
+</body>
+</html>"""

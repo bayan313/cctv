@@ -54,6 +54,15 @@ def get_machine_id():
 
 def discover_server_url():
     candidates = ["http://127.0.0.1:8899", "http://192.168.1.3:8899"]
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                c = json.load(f)
+                s = c.get("server_url")
+                if s and s not in candidates:
+                    candidates.insert(0, s)
+        except Exception:
+            pass
     if GLOBAL_CONFIG_PATH.exists():
         try:
             with open(GLOBAL_CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -61,7 +70,9 @@ def discover_server_url():
                 sip = g.get("server_ip")
                 sport = g.get("server_port", 8899)
                 if sip:
-                    candidates.insert(1, f"http://{sip}:{sport}")
+                    url = f"http://{sip}:{sport}"
+                    if url not in candidates:
+                        candidates.insert(1, url)
         except Exception:
             pass
 
@@ -73,7 +84,7 @@ def discover_server_url():
         except Exception:
             pass
 
-    return "http://192.168.1.3:8899"
+    return candidates[0] if candidates else "http://192.168.1.3:8899"
 
 def auto_register_pc():
     dev_id = get_machine_id()
