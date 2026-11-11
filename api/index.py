@@ -15,23 +15,15 @@ from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import APIKeyCookie
 
-app = FastAPI(title="Lab Study Monitor - Vercel Cloud Portal")
+app = FastAPI(title="Albayan Study Monitor - Vercel Cloud Portal")
 
 cookie_scheme = APIKeyCookie(name="session_token", auto_error=False)
 active_sessions = set()
 
-# Configuration (Supports Vercel Environment Variables with fallbacks)
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Study@Safe2026")
+# Configuration
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "albayan@2026")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9287027030:AAFeB2BZyF9G87R6ulycSzFFY9yIuqepIFQ")
 API_SECRET = os.getenv("API_SECRET", "secure_study_monitor_secret_key_8899")
-
-# In-memory store for serverless instance
-cloud_computers = {
-    "PC-1": {"last_ping": time.time(), "ip": "Lab LAN", "status": "Ready"},
-    "PC-2": {"last_ping": time.time(), "ip": "Lab LAN", "status": "Ready"},
-    "PC-3": {"last_ping": time.time(), "ip": "Lab LAN", "status": "Ready"},
-    "PC-4": {"last_ping": time.time(), "ip": "Lab LAN", "status": "Ready"},
-}
 
 def verify_session(session_token: Optional[str] = Depends(cookie_scheme)):
     if not session_token or session_token not in active_sessions:
@@ -39,12 +31,11 @@ def verify_session(session_token: Optional[str] = Depends(cookie_scheme)):
     return session_token
 
 def get_telegram_updates():
-    """Queries Telegram bot API to find messages from the lab computers."""
     if not TELEGRAM_BOT_TOKEN:
         return []
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-        res = requests.get(url, params={"limit": 20}, timeout=5)
+        res = requests.get(url, params={"limit": 25}, timeout=5)
         if res.status_code == 200:
             return res.json().get("result", [])
     except Exception:
@@ -85,9 +76,8 @@ def logout(response: Response, session_token: Optional[str] = Depends(cookie_sch
 @app.get("/api/status")
 def get_status(session: str = Depends(verify_session)):
     updates = get_telegram_updates()
-    # Check latest messages for computer alerts
     recent_events = []
-    for u in updates[-10:]:
+    for u in updates[-15:]:
         msg = u.get("message", {})
         text = msg.get("text") or (msg.get("caption") if msg.get("video") else "")
         date_ts = msg.get("date", 0)
@@ -97,10 +87,10 @@ def get_status(session: str = Depends(verify_session)):
     return {
         "portal": "Vercel Cloud",
         "computers": [
-            {"name": "PC-1", "is_online": True, "ip": "Lab LAN"},
-            {"name": "PC-2", "is_online": True, "ip": "Lab LAN"},
-            {"name": "PC-3", "is_online": True, "ip": "Lab LAN"},
-            {"name": "PC-4", "is_online": True, "ip": "Lab LAN"},
+            {"name": "albayan 1", "is_online": True, "ip": "Lab LAN"},
+            {"name": "albayan 2", "is_online": True, "ip": "Lab LAN"},
+            {"name": "albayan 3", "is_online": True, "ip": "Lab LAN"},
+            {"name": "albayan 4", "is_online": True, "ip": "Lab LAN"},
         ],
         "total_online": 4,
         "telegram_connected": bool(TELEGRAM_BOT_TOKEN),
@@ -112,13 +102,12 @@ def get_recordings(session: str = Depends(verify_session)):
     updates = get_telegram_updates()
     recordings = []
     
-    # Extract videos received by Telegram Bot
     for u in reversed(updates):
         msg = u.get("message", {})
         video = msg.get("video")
         caption = msg.get("caption", "")
         if video:
-            pc_name = "PC-1"
+            pc_name = "albayan 1"
             if "[" in caption and "]" in caption:
                 pc_name = caption[caption.find("[")+1 : caption.find("]")]
             
@@ -126,14 +115,14 @@ def get_recordings(session: str = Depends(verify_session)):
             size_mb = round(video.get("file_size", 0) / (1024 * 1024), 2)
             
             recordings.append({
-                "filename": f"[{pc_name}]_telegram_clip.mp4",
+                "filename": f"[{pc_name}]_recording.mp4",
                 "computer": pc_name,
                 "created_at": time.strftime("%Y-%m-%d %I:%M %p", time.localtime(msg.get("date", time.time()))),
                 "size_mb": size_mb,
                 "file_id": file_id
             })
 
-    return {"recordings": recordings, "all_computers": ["PC-1", "PC-2", "PC-3", "PC-4"]}
+    return {"recordings": recordings, "all_computers": ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]}
 
 # ----------------- HTML TEMPLATES -----------------
 
@@ -143,7 +132,7 @@ def get_login_html():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lab Study Monitor - Vercel Cloud</title>
+  <title>Albayan Study Monitor - Cloud Portal</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 </head>
@@ -151,17 +140,17 @@ def get_login_html():
   <div class="w-full max-w-md bg-slate-900/90 border border-slate-800 rounded-2xl p-8 shadow-2xl backdrop-blur-xl">
     <div class="text-center mb-8">
       <div class="w-16 h-16 bg-gradient-to-tr from-indigo-500 to-cyan-400 rounded-2xl mx-auto flex items-center justify-center text-3xl shadow-lg shadow-indigo-500/20 mb-4">
-        <i class="fa-solid fa-cloud text-white"></i>
+        <i class="fa-solid fa-graduation-cap text-white"></i>
       </div>
-      <h1 class="text-2xl font-bold tracking-tight text-white">Lab Study Monitor</h1>
-      <p class="text-sm text-slate-400 mt-1">Vercel Cloud Portal (4 PCs)</p>
+      <h1 class="text-2xl font-bold tracking-tight text-white">Albayan Study Monitor</h1>
+      <p class="text-sm text-slate-400 mt-1">Vercel Cloud Portal (albayan 1, 2, 3, 4)</p>
     </div>
 
     <form id="loginForm" class="space-y-5">
       <div>
         <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Master Password</label>
         <div class="relative">
-          <input type="password" id="password" required placeholder="Enter parent password..." 
+          <input type="password" id="password" required placeholder="Enter password (albayan@2026)..." 
             class="w-full bg-slate-950/70 border border-slate-800 rounded-xl px-4 py-3 pl-11 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all">
           <i class="fa-solid fa-lock absolute left-4 top-3.5 text-slate-500"></i>
         </div>
@@ -210,7 +199,7 @@ def get_dashboard_html():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lab Study Monitor - Cloud Dashboard</title>
+  <title>Albayan Study Monitor - Cloud Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 </head>
@@ -222,8 +211,8 @@ def get_dashboard_html():
           <i class="fa-solid fa-cloud"></i>
         </div>
         <div>
-          <h1 class="text-lg font-bold text-white tracking-tight">Lab Study Monitor</h1>
-          <p class="text-xs text-indigo-400">Vercel Cloud Connected</p>
+          <h1 class="text-lg font-bold text-white tracking-tight">Albayan Study Monitor</h1>
+          <p class="text-xs text-indigo-400">Vercel Cloud Live</p>
         </div>
       </div>
 
@@ -242,10 +231,10 @@ def get_dashboard_html():
     <div class="mb-8">
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-sm uppercase font-semibold text-slate-400 tracking-wider">
-          <i class="fa-solid fa-desktop mr-2 text-indigo-400"></i>Lab Computers Status (4 PCs)
+          <i class="fa-solid fa-desktop mr-2 text-indigo-400"></i>Albayan Computers (4 PCs)
         </h3>
         <span class="text-xs font-semibold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20">
-          Active Monitor
+          Auto-Sync Active
         </span>
       </div>
 
@@ -254,9 +243,9 @@ def get_dashboard_html():
           <div>
             <div class="flex items-center gap-2">
               <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span class="text-sm font-bold text-white">PC-1</span>
+              <span class="text-sm font-bold text-white">albayan 1</span>
             </div>
-            <p class="text-[11px] text-slate-400 mt-1 font-mono">Lab Computer 1</p>
+            <p class="text-[11px] text-slate-400 mt-1 font-mono">Computer 1</p>
           </div>
           <span class="text-[11px] font-semibold text-emerald-400">10 FPS</span>
         </div>
@@ -265,9 +254,9 @@ def get_dashboard_html():
           <div>
             <div class="flex items-center gap-2">
               <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span class="text-sm font-bold text-white">PC-2</span>
+              <span class="text-sm font-bold text-white">albayan 2</span>
             </div>
-            <p class="text-[11px] text-slate-400 mt-1 font-mono">Lab Computer 2</p>
+            <p class="text-[11px] text-slate-400 mt-1 font-mono">Computer 2</p>
           </div>
           <span class="text-[11px] font-semibold text-emerald-400">10 FPS</span>
         </div>
@@ -276,9 +265,9 @@ def get_dashboard_html():
           <div>
             <div class="flex items-center gap-2">
               <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span class="text-sm font-bold text-white">PC-3</span>
+              <span class="text-sm font-bold text-white">albayan 3</span>
             </div>
-            <p class="text-[11px] text-slate-400 mt-1 font-mono">Lab Computer 3</p>
+            <p class="text-[11px] text-slate-400 mt-1 font-mono">Computer 3</p>
           </div>
           <span class="text-[11px] font-semibold text-emerald-400">10 FPS</span>
         </div>
@@ -287,9 +276,9 @@ def get_dashboard_html():
           <div>
             <div class="flex items-center gap-2">
               <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span class="text-sm font-bold text-white">PC-4</span>
+              <span class="text-sm font-bold text-white">albayan 4</span>
             </div>
-            <p class="text-[11px] text-slate-400 mt-1 font-mono">Lab Computer 4</p>
+            <p class="text-[11px] text-slate-400 mt-1 font-mono">Computer 4</p>
           </div>
           <span class="text-[11px] font-semibold text-emerald-400">10 FPS</span>
         </div>
@@ -305,9 +294,8 @@ def get_dashboard_html():
         <div>
           <h3 class="text-base font-bold text-white">Vercel Cloud Portal Active</h3>
           <p class="text-xs text-slate-300 mt-1 leading-relaxed">
-            This dashboard is connected to your Telegram Bot (<strong>@my_library_data_bot</strong>). 
-            When your 4 lab computers turn on, they send alerts and recordings through your Telegram connection and local server.
-            You can access this portal anywhere in the world on your mobile phone!
+            Connected to <strong>@my_library_data_bot</strong> and Albayan Lab Network.
+            Password: <strong>albayan@2026</strong>. Auto-updates sync continuously from GitHub.
           </p>
         </div>
       </div>
@@ -322,7 +310,7 @@ def get_dashboard_html():
         </button>
       </div>
       <div id="activityLog" class="space-y-2 text-xs">
-        <p class="text-slate-400">Loading recent updates...</p>
+        <p class="text-slate-400">Loading updates...</p>
       </div>
     </div>
   </main>
@@ -337,7 +325,7 @@ def get_dashboard_html():
         
         const events = data.recent_events || [];
         if (events.length === 0) {
-          log.innerHTML = '<p class="text-slate-500">No events logged yet. Start the bot with /start in Telegram.</p>';
+          log.innerHTML = '<p class="text-slate-500">No events logged yet. Connect with Telegram.</p>';
           return;
         }
 

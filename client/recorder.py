@@ -2,8 +2,11 @@ import os
 import sys
 import time
 import json
+import uuid
+import socket
 import threading
 import queue
+import subprocess
 from pathlib import Path
 from datetime import datetime
 
@@ -26,41 +29,88 @@ GLOBAL_CONFIG_PATH = BASE_DIR / "config.json"
 TEMP_DIR = CLIENT_DIR / "temp_records"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-def load_config():
-    # Priority 1: Local client_config.json (specific to this machine)
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
+def get_machine_id():
+    """Returns a unique, persistent hardware ID for this PC."""
+    try:
+        return str(uuid.getnode())
+    except Exception:
+        return socket.gethostname()
 
-    # Priority 2: Global config.json
+def discover_server_url():
+    """Tries localhost, configured IP, then common subnet IPs to find central server."""
+    candidates = ["http://127.0.0.1:8899", "http://192.168.1.3:8899"]
+    
+    # Try reading from global config if available
     if GLOBAL_CONFIG_PATH.exists():
         try:
             with open(GLOBAL_CONFIG_PATH, "r", encoding="utf-8") as f:
                 g = json.load(f)
-                port = g.get("server_port", 8899)
-                return {
-                    "computer_name": "PC-01",
-                    "server_url": f"http://127.0.0.1:{port}",
-                    "api_secret": g.get("api_secret", "secure_study_monitor_secret_key_8899"),
-                    "fps": g.get("fps", 10),
-                    "chunk_minutes": g.get("chunk_minutes", 5)
-                }
+                sip = g.get("server_ip")
+                sport = g.get("server_port", 8899)
+                if sip:
+                    candidates.insert(1, f"http://{sip}:{sport}")
         except Exception:
             pass
 
+    for url in candidates:
+        try:
+            r = requests.get(f"{url}/api/status", timeout=1.5)
+            if r.status_code in [200, 401]:
+                return url
+        except Exception:
+            pass
+
+    return "http://192.168.1.3:8899"
+
+def auto_register_pc():
+    """Registers this PC with the server to automatically get assigned albayan 1, 2, 3, or 4."""
+    dev_id = get_machine_id()
+    srv_url = discover_server_url()
+    
+    try:
+        res = requests.post(
+            f"{srv_url}/api/client/register",
+            json={"device_id": dev_id},
+            timeout=5
+        )
+        if res.status_code == 200:
+            data = res.json()
+            cfg = {
+                "computer_name": data.get("computer_name", "albayan 1"),
+                "server_url": srv_url,
+                "api_secret": data.get("api_secret", "secure_study_monitor_secret_key_8899"),
+                "fps": data.get("fps", 10),
+                "chunk_minutes": data.get("chunk_minutes", 5)
+            }
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+            print(f"[Register] Auto-assigned Computer Name: {cfg['computer_name']}")
+            return cfg
+    except Exception as e:
+        print(f"[Register] Could not connect to server for auto-registration: {e}")
+
+    # Fallback default
     return {
-        "computer_name": "PC-01",
-        "server_url": "http://127.0.0.1:8899",
+        "computer_name": "albayan 1",
+        "server_url": srv_url,
         "api_secret": "secure_study_monitor_secret_key_8899",
         "fps": 10,
         "chunk_minutes": 5
     }
 
+def load_config():
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                if cfg.get("computer_name"):
+                    return cfg
+        except Exception:
+            pass
+    return auto_register_pc()
+
 CONFIG = load_config()
-COMPUTER_NAME = CONFIG.get("computer_name", "PC-01").strip().upper()
+COMPUTER_NAME = CONFIG.get("computer_name", "albayan 1").strip()
 SERVER_URL = CONFIG.get("server_url", "http://127.0.0.1:8899").rstrip("/")
 API_SECRET = CONFIG.get("api_secret", "secure_study_monitor_secret_key_8899")
 FPS = CONFIG.get("fps", 10)
@@ -76,13 +126,13 @@ def show_recording_popup():
         import tkinter as tk
 
         root = tk.Tk()
-        root.title("Study Monitor Notice")
+        root.title("Albayan Study Monitor")
         root.attributes("-topmost", True)
         root.overrideredirect(True)
 
         screen_width = root.winfo_screenwidth()
-        w = 500
-        h = 135
+        w = 520
+        h = 140
         x = (screen_width - w) // 2
         y = 35
         root.geometry(f"{w}x{h}+{x}+{y}")
@@ -93,7 +143,7 @@ def show_recording_popup():
 
         header_lbl = tk.Label(
             frame,
-            text=f"⚠️  [{COMPUTER_NAME}] SCREEN RECORDING ACTIVE",
+            text=f"⚠️  [{COMPUTER_NAME.upper()}] SCREEN RECORDING ACTIVE",
             font=("Segoe UI", 12, "bold"),
             fg="#f87171",
             bg="#1e293b"
@@ -115,10 +165,29 @@ def show_recording_popup():
     except Exception as e:
         print(f"[Popup] Could not show popup: {e}")
 
-# ----------------- 2. UPLOADER & PING THREAD -----------------
+# ----------------- 2. SAFE AUTO-UPDATER -----------------
+
+def auto_updater_worker():
+    """Periodically pulls updates from GitHub safely and restarts the recorder."""
+    time.sleep(30) # Initial delay
+    while True:
+        try:
+            subprocess.run(["git", "fetch", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, timeout=20)
+            res = subprocess.run(["git", "status", "-uno"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10)
+            if "Your branch is behind" in res.stdout:
+                print(f"[{COMPUTER_NAME}] Update detected on GitHub! Updating safely...")
+                subprocess.run(["git", "pull", "--no-rebase", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=30)
+                print(f"[{COMPUTER_NAME}] Updated to latest version. Restarting recorder...")
+                python = sys.executable
+                os.execl(python, python, *sys.argv)
+        except Exception:
+            pass
+        time.sleep(1800) # Check every 30 minutes
+
+# ----------------- 3. UPLOADER & PING THREAD -----------------
 
 def ping_worker():
-    """Sends periodic heartbeats to the server identifying this computer."""
+    """Sends periodic heartbeats to the server."""
     while True:
         try:
             requests.post(
@@ -165,19 +234,17 @@ def upload_worker():
                             path_obj.unlink()
                         except Exception:
                             pass
-            except Exception as e:
-                # Retry if server or Wi-Fi is temporarily unreachable
+            except Exception:
                 time.sleep(retry_delay)
                 retry_delay = min(60, retry_delay * 2)
 
         upload_queue.task_done()
 
-# ----------------- 3. SCREEN RECORDER -----------------
+# ----------------- 4. SCREEN RECORDER -----------------
 
 def record_screen():
     print(f"[{COMPUTER_NAME}] Starting screen recording at {FPS} FPS...")
     
-    # Enqueue any pending files from previous sessions
     for prev_file in TEMP_DIR.glob("*.mp4"):
         upload_queue.put(str(prev_file))
 
@@ -186,7 +253,6 @@ def record_screen():
         width = mon["width"]
         height = mon["height"]
 
-        # Ensure even dimensions for h264 encoder
         width = width if width % 2 == 0 else width - 1
         height = height if height % 2 == 0 else height - 1
         capture_box = {"top": mon["top"], "left": mon["left"], "width": width, "height": height}
@@ -208,7 +274,7 @@ def record_screen():
                     macro_block_size=1
                 )
             except Exception as err:
-                print(f"[Recorder] Writer init error: {err}")
+                print(f"[Recorder] Writer error: {err}")
                 time.sleep(5)
                 continue
 
@@ -234,7 +300,7 @@ def record_screen():
 
             try:
                 writer.close()
-                print(f"[Recorder] Chunk finalized: {video_filename} ({frame_count} frames)")
+                print(f"[Recorder] Chunk saved: {video_filename} ({frame_count} frames)")
                 if current_video_path.exists() and current_video_path.stat().st_size > 1000:
                     upload_queue.put(str(current_video_path))
                 else:
@@ -246,18 +312,21 @@ def record_screen():
 # ----------------- MAIN FLOW -----------------
 
 if __name__ == "__main__":
-    print(f"[{COMPUTER_NAME}] Study Monitor Initialized. Waiting 10 seconds before activation...")
+    print(f"[{COMPUTER_NAME}] Albayan Study Monitor. Waiting 10 seconds before activation...")
     time.sleep(10)
 
-    # 10s passed -> Show warning popup
+    # 10s delay -> Show popup alert
     show_recording_popup()
 
-    # Background workers
+    # Start threads
+    t_updater = threading.Thread(target=auto_updater_worker, daemon=True)
+    t_updater.start()
+
     t_ping = threading.Thread(target=ping_worker, daemon=True)
     t_ping.start()
 
     t_upload = threading.Thread(target=upload_worker, daemon=True)
     t_upload.start()
 
-    # Continuous recording
+    # Record loop
     record_screen()

@@ -1,11 +1,13 @@
 import os
+import sys
 import json
 import time
 import socket
 import asyncio
 import secrets
+import subprocess
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Optional, Dict, Any
 
 try:
@@ -30,6 +32,8 @@ STATIC_DIR = BASE_DIR / "server" / "static"
 RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
+DEFAULT_PC_NAMES = ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]
+
 def get_lan_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -53,11 +57,10 @@ def save_config(cfg):
 config = load_config()
 
 # App State
-app = FastAPI(title="Study Monitor Portal")
+app = FastAPI(title="Albayan Study Monitor Portal")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 active_sessions = set()
-# Computer tracking: computer_name -> {"last_ping": float, "ip": str, "online": bool}
 active_computers: Dict[str, Dict[str, Any]] = {}
 last_cleanup_time = 0
 
@@ -78,15 +81,13 @@ def send_telegram_message(text: str):
     for cid in chat_ids:
         try:
             requests.post(url, json={"chat_id": cid, "text": text, "parse_mode": "Markdown"}, timeout=5)
-        except Exception as e:
-            print(f"[Telegram] Error sending message: {e}")
+        except Exception:
+            pass
 
 def send_telegram_video(video_path: Path, caption: str):
     cfg = load_config()
-    # Check if videos are hidden in Telegram
     if not cfg.get("send_videos_to_telegram", False):
         return
-
     token = cfg.get("telegram_bot_token")
     chat_ids = cfg.get("telegram_chat_ids", [])
     if not token or not chat_ids:
@@ -101,15 +102,41 @@ def send_telegram_video(video_path: Path, caption: str):
                     files={"video": vf},
                     timeout=45
                 )
-        except Exception as e:
-            print(f"[Telegram] Error sending video: {e}")
+        except Exception:
+            pass
 
-# ----------------- BACKGROUND TASKS -----------------
+# ----------------- AUTO UPDATER (SAFE) -----------------
+
+async def auto_updater_task():
+    """Checks GitHub for updates every 30 minutes and applies them safely."""
+    await asyncio.sleep(15) # Wait after boot
+    print("[AutoUpdater] Safe GitHub update checker started.")
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+            def run_git_check():
+                res_fetch = subprocess.run(["git", "fetch", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=20)
+                res_status = subprocess.run(["git", "status", "-uno"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10)
+                if "Your branch is behind" in res_status.stdout:
+                    print("[AutoUpdater] Update found on GitHub! Safely pulling...")
+                    subprocess.run(["git", "pull", "--no-rebase", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=30)
+                    return True
+                return False
+
+            has_update = await loop.run_in_executor(None, run_git_check)
+            if has_update:
+                send_telegram_message("🔄 *System Update:* Server updated to latest version from GitHub.")
+        except Exception as e:
+            # print(f"[AutoUpdater] Check skipped: {e}")
+            pass
+
+        await asyncio.sleep(1800) # Every 30 mins
+
+# ----------------- TELEGRAM & CLEANUP TASKS -----------------
 
 async def telegram_bot_poller():
-    """Polls Telegram updates to auto-register parent chat IDs and handle multi-PC commands."""
     last_update_id = 0
-    print("[Telegram] Multi-PC Bot listener started.")
+    print("[Telegram] Bot listener started.")
     while True:
         try:
             cfg = load_config()
@@ -145,22 +172,20 @@ async def telegram_bot_poller():
                         chat_ids.append(chat_id)
                         cfg["telegram_chat_ids"] = chat_ids
                         save_config(cfg)
-                        print(f"[Telegram] Registered new chat_id: {chat_id} ({first_name})")
 
-                    # Command parsing
                     parts = text.split()
                     cmd = parts[0].lower() if parts else ""
 
                     if cmd == "/start":
                         welcome_msg = (
                             f"👋 Hello {first_name}!\n\n"
-                            "🛡️ *Lab Study Monitor Bot Connected!*\n\n"
-                            "You can monitor all 4 lab computers from here.\n\n"
+                            "🛡️ *Albayan Lab Study Monitor Bot Connected!*\n\n"
+                            "You can monitor all 4 lab computers (albayan 1, 2, 3, 4) from here.\n\n"
                             "📌 *Commands:*\n"
-                            "• `/status` - Check all computers (online / offline)\n"
-                            "• `/hidevideos` - Hide videos from Telegram (keeps chat clean, saves in Web)\n"
+                            "• `/status` - Check all computers\n"
+                            "• `/hidevideos` - Hide videos from Telegram (keeps chat clean)\n"
                             "• `/showvideos` - Enable video sending to Telegram\n"
-                            "• `/latest <PC-NAME>` - View latest video (e.g. `/latest PC-1`)\n"
+                            "• `/latest <albayan 1>` - View latest recording\n"
                             "• `/link` - Get Web Dashboard link"
                         )
                         send_telegram_message(welcome_msg)
@@ -168,9 +193,9 @@ async def telegram_bot_poller():
                     elif cmd == "/status":
                         now = time.time()
                         if not active_computers:
-                            send_telegram_message("🖥️ *Lab Computers Status:*\nNo computers have connected yet.")
+                            send_telegram_message("🖥️ *Lab Computers Status:*\nNo computers active right now.")
                         else:
-                            lines = ["🖥️ *Lab Computers Status:*"]
+                            lines = ["🖥️ *Albayan Computers Status:*"]
                             for pc_name, data in sorted(active_computers.items()):
                                 is_online = (now - data.get("last_ping", 0)) < 60
                                 if is_online:
@@ -184,28 +209,27 @@ async def telegram_bot_poller():
                     elif cmd in ["/hidevideos", "/mutevideos"]:
                         cfg["send_videos_to_telegram"] = False
                         save_config(cfg)
-                        send_telegram_message("🔇 *Videos Hidden from Telegram:*\nVideos will NOT be sent here to prevent chat flooding. All videos remain safely accessible on the Web Dashboard.")
+                        send_telegram_message("🔇 *Videos Hidden from Telegram:*\nVideos will not flood Telegram. They remain saved on the Web Dashboard.")
 
                     elif cmd in ["/showvideos", "/unmutevideos"]:
                         cfg["send_videos_to_telegram"] = True
                         save_config(cfg)
-                        send_telegram_message("📹 *Videos Enabled in Telegram:*\nVideo clips from all active computers will now be sent here.")
+                        send_telegram_message("📹 *Videos Enabled in Telegram:*\nNew clips will be sent here.")
 
                     elif cmd == "/link":
                         lan_ip = get_lan_ip()
                         port = cfg.get("server_port", 8899)
-                        send_telegram_message(f"🌐 *Web Dashboard URL:*\nLocal/Mobile: http://{lan_ip}:{port}")
+                        send_telegram_message(f"🌐 *Web Dashboard URL:*\nhttp://{lan_ip}:{port}\nPassword: `albayan@2026`")
 
                     elif cmd == "/latest":
-                        target_pc = parts[1].upper() if len(parts) > 1 else None
+                        target_pc = " ".join(parts[1:]).strip().lower() if len(parts) > 1 else None
                         files = sorted(RECORDINGS_DIR.glob("*.mp4"), key=lambda f: f.stat().st_mtime, reverse=True)
                         if target_pc:
-                            files = [f for f in files if f.name.upper().startswith(f"[{target_pc}]")]
+                            files = [f for f in files if f.name.lower().startswith(f"[{target_pc}]")]
                         
                         if files:
                             latest_file = files[0]
                             caption = f"📹 Latest recording: `{latest_file.name}`"
-                            # Even if send_videos_to_telegram is false, manual /latest sends the requested file
                             cfg_token = cfg.get("telegram_bot_token")
                             with open(latest_file, "rb") as vf:
                                 requests.post(
@@ -224,9 +248,9 @@ async def telegram_bot_poller():
         await asyncio.sleep(3)
 
 async def auto_delete_old_recordings():
-    """Deletes recordings older than retention_hours (default 24h)."""
+    """Deletes recordings older than retention_hours (24 hours)."""
     global last_cleanup_time
-    print("[Cleanup] 24-hour auto-cleaner worker running.")
+    print("[Cleanup] 24-hour auto-cleaner active.")
     while True:
         try:
             cfg = load_config()
@@ -240,15 +264,14 @@ async def auto_delete_old_recordings():
                     try:
                         file_path.unlink()
                         deleted_count += 1
-                        print(f"[Cleanup] Deleted expired recording: {file_path.name}")
-                    except Exception as err:
-                        print(f"[Cleanup] Error deleting {file_path.name}: {err}")
+                    except Exception:
+                        pass
 
             if deleted_count > 0:
                 print(f"[Cleanup] Auto-deleted {deleted_count} file(s) older than 24 hours.")
             last_cleanup_time = now
-        except Exception as e:
-            print(f"[Cleanup] Exception: {e}")
+        except Exception:
+            pass
 
         await asyncio.sleep(600)
 
@@ -256,6 +279,47 @@ async def auto_delete_old_recordings():
 async def startup_event():
     asyncio.create_task(telegram_bot_poller())
     asyncio.create_task(auto_delete_old_recordings())
+    asyncio.create_task(auto_updater_task())
+
+# ----------------- CLIENT AUTO REGISTRATION -----------------
+
+@app.post("/api/client/register")
+def register_client(request: Request, payload: dict):
+    """Automatically assigns 'albayan 1', 'albayan 2', etc. based on device hardware ID."""
+    cfg = load_config()
+    client_ip = request.client.host if request.client else "unknown"
+    device_id = payload.get("device_id", client_ip).strip()
+
+    registered = cfg.get("registered_devices", {})
+    if device_id in registered:
+        assigned_name = registered[device_id]
+    else:
+        # Assign next available name
+        used_names = set(registered.values())
+        assigned_name = None
+        for name in DEFAULT_PC_NAMES:
+            if name not in used_names:
+                assigned_name = name
+                break
+        if not assigned_name:
+            assigned_name = f"albayan {len(registered) + 1}"
+
+        registered[device_id] = assigned_name
+        cfg["registered_devices"] = registered
+        save_config(cfg)
+        send_telegram_message(f"🎉 *New PC Configured:* `{assigned_name}` (IP: `{client_ip}`)")
+
+    lan_ip = get_lan_ip()
+    port = cfg.get("server_port", 8899)
+
+    return {
+        "ok": True,
+        "computer_name": assigned_name,
+        "server_url": f"http://{lan_ip}:{port}",
+        "api_secret": cfg.get("api_secret", "secure_study_monitor_secret_key_8899"),
+        "fps": cfg.get("fps", 10),
+        "chunk_minutes": cfg.get("chunk_minutes", 5)
+    }
 
 # ----------------- WEB ROUTES -----------------
 
@@ -269,7 +333,7 @@ def index_page(request: Request, session_token: Optional[str] = Depends(cookie_s
 def login(payload: dict, response: Response):
     password = payload.get("password")
     cfg = load_config()
-    expected_password = cfg.get("admin_password", "Study@Safe2026")
+    expected_password = cfg.get("admin_password", "albayan@2026")
     if password == expected_password:
         token = secrets.token_hex(24)
         active_sessions.add(token)
@@ -296,18 +360,24 @@ def get_system_status(session: str = Depends(verify_session)):
     chat_ids = cfg.get("telegram_chat_ids", [])
     now = time.time()
     
-    # Process computers status
     computers_list = []
     online_count = 0
-    for pc_name, data in sorted(active_computers.items()):
+    # Include all 4 albayan PCs by default
+    all_names = list(DEFAULT_PC_NAMES)
+    for name in active_computers:
+        if name not in all_names:
+            all_names.append(name)
+
+    for pc_name in all_names:
+        data = active_computers.get(pc_name, {})
         is_online = (now - data.get("last_ping", 0)) < 60
         if is_online:
             online_count += 1
         computers_list.append({
             "name": pc_name,
             "is_online": is_online,
-            "ip": data.get("ip", "N/A"),
-            "last_seen_seconds": int(now - data.get("last_ping", 0))
+            "ip": data.get("ip", "Not connected"),
+            "last_seen_seconds": int(now - data.get("last_ping", 0)) if "last_ping" in data else None
         })
 
     files = list(RECORDINGS_DIR.glob("*.mp4"))
@@ -338,12 +408,11 @@ def list_recordings(
     
     for f in files:
         name = f.name
-        # Parse computer name: format is [PC-NAME]_YYYYMMDD_HHMMSS.mp4
-        pc_name = "Unknown"
+        pc_name = "albayan"
         if name.startswith("[") and "]" in name:
             pc_name = name[1:name.find("]")]
 
-        if computer and computer != "all" and pc_name.upper() != computer.upper():
+        if computer and computer != "all" and pc_name.lower() != computer.lower():
             continue
 
         mtime = f.stat().st_mtime
@@ -360,12 +429,11 @@ def list_recordings(
             "hours_remaining": hours_remaining
         })
 
-    # List of unique computers found in recordings
     all_pcs = sorted(list(set(
         (f.name[1:f.name.find("]")]) for f in files if f.name.startswith("[") and "]" in f.name
     )))
 
-    return {"recordings": results, "all_computers": all_pcs}
+    return {"recordings": results, "all_computers": all_pcs if all_pcs else DEFAULT_PC_NAMES}
 
 @app.delete("/api/recordings/{filename}")
 def delete_recording(filename: str, session: str = Depends(verify_session)):
@@ -436,7 +504,7 @@ def client_ping(
         raise HTTPException(status_code=403, detail="Forbidden")
 
     client_ip = request.client.host if request.client else "unknown"
-    pc_name = payload.get("computer_name", "PC-Unknown").strip().upper()
+    pc_name = payload.get("computer_name", "albayan 1").strip()
 
     now = time.time()
     is_new = pc_name not in active_computers or (now - active_computers[pc_name]["last_ping"]) > 180
@@ -452,14 +520,14 @@ def client_ping(
 async def client_upload(
     request: Request,
     video: UploadFile = File(...),
-    computer_name: str = Form("PC-Unknown"),
+    computer_name: str = Form("albayan 1"),
     x_api_secret: Optional[str] = Header(None)
 ):
     cfg = load_config()
     if x_api_secret != cfg.get("api_secret"):
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    pc_name = computer_name.strip().upper()
+    pc_name = computer_name.strip()
     client_ip = request.client.host if request.client else "unknown"
     active_computers[pc_name] = {"last_ping": time.time(), "ip": client_ip}
 
@@ -471,7 +539,6 @@ async def client_upload(
     file_size_mb = round(dest_path.stat().st_size / (1024 * 1024), 2)
     print(f"[Upload] [{pc_name}] Received video: {dest_path.name} ({file_size_mb} MB)")
 
-    # Send video or text alert to Telegram
     if cfg.get("send_videos_to_telegram", False):
         caption = f"📹 *[{pc_name}] Screen Recording*\nFile: `{dest_path.name}`\nSize: {file_size_mb} MB"
         send_telegram_video(dest_path, caption)
@@ -486,7 +553,7 @@ def get_login_html():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lab Study Monitor - Login</title>
+  <title>Albayan Lab Study Monitor - Login</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 </head>
@@ -494,17 +561,17 @@ def get_login_html():
   <div class="w-full max-w-md bg-slate-900/90 border border-slate-800 rounded-2xl p-8 shadow-2xl backdrop-blur-xl">
     <div class="text-center mb-8">
       <div class="w-16 h-16 bg-gradient-to-tr from-indigo-500 to-cyan-400 rounded-2xl mx-auto flex items-center justify-center text-3xl shadow-lg shadow-indigo-500/20 mb-4">
-        <i class="fa-solid fa-network-wired text-white"></i>
+        <i class="fa-solid fa-graduation-cap text-white"></i>
       </div>
-      <h1 class="text-2xl font-bold tracking-tight text-white">Lab Study Monitor</h1>
-      <p class="text-sm text-slate-400 mt-1">Multi-PC Screen Review & Parental Control</p>
+      <h1 class="text-2xl font-bold tracking-tight text-white">Albayan Study Monitor</h1>
+      <p class="text-sm text-slate-400 mt-1">Multi-PC Screen Archive (albayan 1, 2, 3, 4)</p>
     </div>
 
     <form id="loginForm" class="space-y-5">
       <div>
         <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Master Password</label>
         <div class="relative">
-          <input type="password" id="password" required placeholder="Enter parent password..." 
+          <input type="password" id="password" required placeholder="Enter password (albayan@2026)..." 
             class="w-full bg-slate-950/70 border border-slate-800 rounded-xl px-4 py-3 pl-11 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all">
           <i class="fa-solid fa-lock absolute left-4 top-3.5 text-slate-500"></i>
         </div>
@@ -557,7 +624,7 @@ def get_dashboard_html():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lab Study Monitor - 4 PCs</title>
+  <title>Albayan Lab Study Monitor</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 </head>
@@ -567,18 +634,17 @@ def get_dashboard_html():
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
       <div class="flex items-center gap-3">
         <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white text-lg shadow-md shadow-indigo-600/30">
-          <i class="fa-solid fa-network-wired"></i>
+          <i class="fa-solid fa-graduation-cap"></i>
         </div>
         <div>
-          <h1 class="text-lg font-bold text-white tracking-tight">Lab Study Monitor</h1>
-          <p class="text-xs text-slate-400">Multi-Computer Monitoring & Archive</p>
+          <h1 class="text-lg font-bold text-white tracking-tight">Albayan Study Monitor</h1>
+          <p class="text-xs text-slate-400">Lab Parental Control & Screen Review</p>
         </div>
       </div>
 
       <div class="flex items-center gap-4">
-        <!-- Server LAN IP Pill for easy client setup -->
         <div class="hidden sm:flex items-center gap-2 bg-slate-800/60 px-3 py-1.5 rounded-lg border border-slate-700/50 text-xs">
-          <span class="text-slate-400">Server IP:</span>
+          <span class="text-slate-400">Server:</span>
           <span id="serverIpPill" class="text-indigo-400 font-mono font-semibold">192.168.1.3:8899</span>
         </div>
 
@@ -590,11 +656,11 @@ def get_dashboard_html():
   </header>
 
   <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-    <!-- Lab Computers Status Cards -->
+    <!-- Lab Computers Status Cards (albayan 1, 2, 3, 4) -->
     <div class="mb-8">
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-sm uppercase font-semibold text-slate-400 tracking-wider">
-          <i class="fa-solid fa-desktop mr-2 text-indigo-400"></i>Lab Computers Status (4 PCs)
+          <i class="fa-solid fa-desktop mr-2 text-indigo-400"></i>Albayan Computers (4 PCs)
         </h3>
         <span id="onlineCounter" class="text-xs font-semibold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20">
           0 Online
@@ -606,15 +672,15 @@ def get_dashboard_html():
       </div>
     </div>
 
-    <!-- Quick Stats & Settings Row -->
+    <!-- Quick Stats -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
       <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
         <div class="flex items-center justify-between">
-          <span class="text-xs uppercase font-semibold text-slate-400">Recordings Archive</span>
+          <span class="text-xs uppercase font-semibold text-slate-400">Recordings (Last 24h)</span>
           <i class="fa-solid fa-film text-cyan-400 text-lg"></i>
         </div>
         <p id="statTotalClips" class="text-2xl font-bold text-white mt-2">0</p>
-        <p class="text-xs text-slate-500 mt-1" id="statTotalSize">0 MB stored (Last 24h)</p>
+        <p class="text-xs text-slate-500 mt-1" id="statTotalSize">0 MB stored</p>
       </div>
 
       <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
@@ -641,7 +707,7 @@ def get_dashboard_html():
           <a href="https://t.me/my_library_data_bot" target="_blank" class="text-sky-300 hover:underline">
             @my_library_data_bot <i class="fa-solid fa-arrow-up-right-from-square text-[10px]"></i>
           </a>
-          <span class="text-slate-500">Type /hidevideos or /showvideos</span>
+          <span class="text-slate-500">Auto-update enabled</span>
         </div>
       </div>
     </div>
@@ -651,7 +717,7 @@ def get_dashboard_html():
       <div class="flex items-center justify-between mb-4">
         <div>
           <div class="flex items-center gap-2">
-            <span id="currentVideoPc" class="px-2 py-0.5 rounded bg-indigo-600/30 text-indigo-300 text-xs font-mono font-bold">PC-1</span>
+            <span id="currentVideoPc" class="px-2 py-0.5 rounded bg-indigo-600/30 text-indigo-300 text-xs font-mono font-bold">albayan 1</span>
             <h2 id="currentVideoTitle" class="text-lg font-semibold text-white">Video Player</h2>
           </div>
           <p id="currentVideoSub" class="text-xs text-slate-400 mt-0.5">Playing chunk</p>
@@ -665,10 +731,9 @@ def get_dashboard_html():
           Your browser does not support HTML5 video.
         </video>
       </div>
-      <!-- Playback Speed Controls -->
       <div class="mt-4 flex flex-wrap items-center justify-between gap-4">
         <div class="flex items-center gap-2">
-          <span class="text-xs text-slate-400 font-semibold uppercase">Playback Speed:</span>
+          <span class="text-xs text-slate-400 font-semibold uppercase">Speed:</span>
           <button onclick="setSpeed(1.0)" class="speed-btn px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-300 hover:bg-slate-700">1.0x</button>
           <button onclick="setSpeed(1.25)" class="speed-btn px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-300 hover:bg-slate-700">1.25x</button>
           <button onclick="setSpeed(1.5)" class="speed-btn px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-300 hover:bg-slate-700">1.5x</button>
@@ -687,10 +752,9 @@ def get_dashboard_html():
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h2 class="text-lg font-bold text-white tracking-tight">Screen Recordings (Last 24 Hours)</h2>
-          <p class="text-xs text-slate-400 mt-1">Recorded at 10 FPS. Automatically deleted after 24 hours.</p>
+          <p class="text-xs text-slate-400 mt-1">Recorded at 10 FPS. Older clips automatically deleted.</p>
         </div>
         
-        <!-- Filter by Computer -->
         <div class="flex items-center gap-3">
           <label class="text-xs text-slate-400 font-semibold uppercase">Filter PC:</label>
           <select id="pcFilterSelect" onchange="loadRecordings()" class="bg-slate-800 border border-slate-700 text-white rounded-lg px-3 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none">
@@ -703,12 +767,8 @@ def get_dashboard_html():
         </div>
       </div>
 
-      <!-- Video Grid -->
-      <div id="videoGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        <!-- Rendered dynamically -->
-      </div>
+      <div id="videoGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
 
-      <!-- Empty State -->
       <div id="emptyState" class="hidden py-16 text-center">
         <div class="w-16 h-16 bg-slate-800/50 rounded-2xl mx-auto flex items-center justify-center text-slate-500 text-2xl mb-3">
           <i class="fa-solid fa-video-slash"></i>
@@ -728,43 +788,33 @@ def get_dashboard_html():
         if (res.status === 401) { window.location.reload(); return; }
         const data = await res.json();
         
-        // Update server IP pill
         document.getElementById('serverIpPill').innerText = `${data.server_ip}:${data.server_port}`;
 
-        // Update computers status bar
         const compBar = document.getElementById('computersBar');
         compBar.innerHTML = '';
         
         const computers = data.computers || [];
-        if (computers.length === 0) {
-          compBar.innerHTML = `
-            <div class="col-span-full bg-slate-950/40 border border-slate-800/80 rounded-xl p-4 text-center text-xs text-slate-400">
-              No computers connected yet. Run <code>install_startup.bat</code> on your 4 lab PCs.
-            </div>
-          `;
-        } else {
-          computers.forEach(c => {
-            const card = document.createElement('div');
-            card.className = `p-3.5 rounded-xl border flex items-center justify-between ${
-              c.is_online 
-                ? 'bg-emerald-500/5 border-emerald-500/30' 
-                : 'bg-slate-900/40 border-slate-800'
-            }`;
-            card.innerHTML = `
-              <div>
-                <div class="flex items-center gap-2">
-                  <span class="w-2 h-2 rounded-full ${c.is_online ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}"></span>
-                  <span class="text-sm font-bold text-white">${c.name}</span>
-                </div>
-                <p class="text-[11px] text-slate-400 mt-1 font-mono">${c.ip}</p>
+        computers.forEach(c => {
+          const card = document.createElement('div');
+          card.className = `p-3.5 rounded-xl border flex items-center justify-between ${
+            c.is_online 
+              ? 'bg-emerald-500/5 border-emerald-500/30' 
+              : 'bg-slate-900/40 border-slate-800'
+          }`;
+          card.innerHTML = `
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full ${c.is_online ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}"></span>
+                <span class="text-sm font-bold text-white">${c.name}</span>
               </div>
-              <span class="text-[11px] font-semibold ${c.is_online ? 'text-emerald-400' : 'text-slate-500'}">
-                ${c.is_online ? 'REC 10 FPS' : 'Offline'}
-              </span>
-            `;
-            compBar.appendChild(card);
-          });
-        }
+              <p class="text-[11px] text-slate-400 mt-1 font-mono">${c.ip}</p>
+            </div>
+            <span class="text-[11px] font-semibold ${c.is_online ? 'text-emerald-400' : 'text-slate-500'}">
+              ${c.is_online ? 'REC 10 FPS' : 'Offline'}
+            </span>
+          `;
+          compBar.appendChild(card);
+        });
 
         document.getElementById('onlineCounter').innerText = `${data.total_online} Online`;
         document.getElementById('statTotalClips').innerText = data.total_recordings;
@@ -796,14 +846,13 @@ def get_dashboard_html():
         if (res.status === 401) { window.location.reload(); return; }
         const data = await res.json();
         
-        // Update select options if new computers appeared
         const sel = document.getElementById('pcFilterSelect');
         const currentSelected = sel.value;
-        const pcs = data.all_computers || [];
+        const pcs = data.all_computers || ['albayan 1', 'albayan 2', 'albayan 3', 'albayan 4'];
         
         let selectHtml = '<option value="all">All Computers</option>';
         pcs.forEach(pc => {
-          const isSel = (pc === currentSelected) ? 'selected' : '';
+          const isSel = (pc.toLowerCase() === currentSelected.toLowerCase()) ? 'selected' : '';
           selectHtml += `<option value="${pc}" ${isSel}>${pc}</option>`;
         });
         sel.innerHTML = selectHtml;
@@ -918,9 +967,11 @@ if __name__ == "__main__":
     port = cfg.get("server_port", 8899)
     lan_ip = get_lan_ip()
     print("=" * 60)
-    print(f"  LAB STUDY MONITOR - 4 COMPUTERS CENTRAL SERVER")
+    print("  ALBAYAN LAB STUDY MONITOR - 4 COMPUTERS SERVER")
     print("=" * 60)
-    print(f" Local Web Portal:   http://localhost:{port}")
-    print(f" Lab Network (LAN):  http://{lan_ip}:{port}")
+    print(f" Web Dashboard:     http://localhost:{port}")
+    print(f" Lab Network (LAN): http://{lan_ip}:{port}")
+    print(" Master Password:   albayan@2026")
+    print(" Auto-Update:       Active (Safe GitHub sync)")
     print("=" * 60)
     uvicorn.run(app, host=host, port=port)
