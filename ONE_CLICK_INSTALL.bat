@@ -1,10 +1,10 @@
 @echo off
 setlocal
-title Albayan Study Monitor - One Click Setup
+title Albayan CCTV Study Monitor - One Click Setup
 cd /d "%~dp0"
 
 echo ========================================================
-echo   ALBAYAN LAB MONITOR - 1-CLICK AUTOMATIC INSTALLER
+echo   ALBAYAN LAB CCTV MONITOR - 1-CLICK AUTOMATIC SETUP
 echo ========================================================
 echo.
 echo [1/3] Detecting Server and Auto-Assigning Computer Name...
@@ -19,7 +19,7 @@ echo Set WshShell = CreateObject("WScript.Shell") > "%VBS_LAUNCHER%"
 echo WshShell.Run "pythonw """ ^& "%~dp0client\recorder.py""" , 0, False >> "%VBS_LAUNCHER%"
 
 echo.
-echo [3/3] Starting Monitor in Background...
+echo [3/3] Starting CCTV Screen Monitor in Background...
 start "" pythonw client\recorder.py
 
 echo.
@@ -29,8 +29,9 @@ echo ========================================================
 echo This PC will now:
 echo   - Start automatically whenever the computer turns ON
 echo   - Wait 10 seconds and display the popup warning
-echo   - Record at 10 FPS and upload to your Web Dashboard
-echo   - Auto-update safely whenever you push to GitHub!
+echo   - Capture screenshots every 5 minutes (CCTV Timeline)
+echo   - Transmit live screen feed to Web CCTV Dashboard
+echo   - Auto-update safely whenever updates are pushed to GitHub!
 echo ========================================================
 echo.
 pause

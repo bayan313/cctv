@@ -21,10 +21,11 @@ except Exception:
 
 import requests
 from fastapi import FastAPI, Request, Response, HTTPException, Depends, UploadFile, File, Form, Header, Query
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import APIKeyCookie
 import uvicorn
+from PIL import Image, ImageDraw, ImageFont
 
 # Directories & Configuration
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -51,6 +52,16 @@ def normalize_pc_name(name: str) -> str:
         return "albayan 4"
     return clean
 
+def get_pc_screenshots(pc_name: str):
+    clean = normalize_pc_name(pc_name)
+    prefix = f"[{clean}]"
+    if not RECORDINGS_DIR.exists():
+        return []
+    return sorted(
+        [f for f in RECORDINGS_DIR.iterdir() if f.name.startswith(prefix) and f.suffix.lower() == ".jpg"],
+        key=lambda f: f.stat().st_mtime
+    )
+
 def get_lan_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -74,7 +85,7 @@ def save_config(cfg):
 config = load_config()
 
 # App State
-app = FastAPI(title="Albayan Study Monitor Portal")
+app = FastAPI(title="Albayan CCTV Lab Monitor Portal")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 active_sessions = set()
@@ -101,28 +112,56 @@ def send_telegram_message(text: str):
         except Exception:
             pass
 
-def send_telegram_video(video_path: Path, caption: str):
+def send_telegram_photo(photo_path: Path, caption: str):
     cfg = load_config()
-    if not cfg.get("send_videos_to_telegram", False):
-        return
     token = cfg.get("telegram_bot_token")
     chat_ids = cfg.get("telegram_chat_ids", [])
     if not token or not chat_ids:
         return
-    url = f"https://api.telegram.org/bot{token}/sendVideo"
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
     for cid in chat_ids:
         try:
-            with open(video_path, "rb") as vf:
+            with open(photo_path, "rb") as pf:
                 requests.post(
                     url,
                     data={"chat_id": cid, "caption": caption, "parse_mode": "Markdown"},
-                    files={"video": vf},
-                    timeout=45
+                    files={"photo": pf},
+                    timeout=20
                 )
         except Exception:
             pass
 
-# ----------------- AUTO UPDATER -----------------
+# ----------------- PLACEHOLDER CCTV IMAGE GENERATOR -----------------
+
+def generate_no_signal_image(computer_name: str) -> bytes:
+    """Generates a retro CCTV 'NO SIGNAL' image when camera is offline."""
+    w, h = 960, 540
+    img = Image.new("RGB", (w, h), color=(15, 23, 42))
+    draw = ImageDraw.Draw(img)
+
+    # Grid lines to mimic CCTV monitor
+    for y in range(0, h, 20):
+        draw.line([(0, y), (w, y)], fill=(20, 30, 50), width=1)
+
+    # Box
+    draw.rectangle([(80, 80), (w - 80, h - 80)], outline=(51, 65, 85), width=2)
+
+    # Text overlay
+    cam_id = "01"
+    for idx, name in enumerate(DEFAULT_PC_NAMES):
+        if name.lower() == computer_name.lower():
+            cam_id = f"0{idx+1}"
+
+    draw.text((100, 100), f"CAM {cam_id} // {computer_name.upper()}", fill=(100, 116, 139))
+    draw.text((w // 2 - 130, h // 2 - 30), "[ NO LIVE SIGNAL ]", fill=(239, 68, 68))
+    draw.text((w // 2 - 190, h // 2 + 10), "COMPUTER OFFLINE OR READY TO CONNECT", fill=(148, 163, 184))
+    draw.text((100, h - 120), "STATUS: STANDBY", fill=(71, 85, 105))
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=75)
+    return buf.getvalue()
+
+# ----------------- BACKGROUND TASKS -----------------
 
 async def auto_updater_task():
     await asyncio.sleep(15)
@@ -146,8 +185,6 @@ async def auto_updater_task():
             pass
 
         await asyncio.sleep(1800)
-
-# ----------------- TELEGRAM & CLEANUP TASKS -----------------
 
 async def telegram_bot_poller():
     last_update_id = 0
@@ -194,76 +231,67 @@ async def telegram_bot_poller():
                     if cmd == "/start":
                         welcome_msg = (
                             f"👋 Hello {first_name}!\n\n"
-                            "🛡️ *Albayan Lab Study Monitor Bot Connected!*\n\n"
-                            "You can monitor all 4 lab computers (albayan 1, 2, 3, 4) from here.\n\n"
+                            "🛡️ *Albayan Lab CCTV Screen Monitor Bot Connected!*\n\n"
+                            "You can monitor all 4 lab computers from here.\n\n"
                             "📌 *Commands:*\n"
                             "• `/status` - Check all computers\n"
-                            "• `/hidevideos` - Hide videos from Telegram (keeps chat clean)\n"
-                            "• `/showvideos` - Enable video sending to Telegram\n"
-                            "• `/latest <albayan 1>` - View latest recording\n"
-                            "• `/link` - Get Web Dashboard link"
+                            "• `/cam1` or `/snap1` - Instant screenshot of albayan 1\n"
+                            "• `/cam2` - Instant screenshot of albayan 2\n"
+                            "• `/cam3` - Instant screenshot of albayan 3\n"
+                            "• `/cam4` - Instant screenshot of albayan 4\n"
+                            "• `/link` - Get Web CCTV Dashboard link"
                         )
                         send_telegram_message(welcome_msg)
                     
                     elif cmd == "/status":
                         now = time.time()
-                        lines = ["🖥️ *Albayan Computers Status (4 PCs):*"]
+                        lines = ["🖥️ *Albayan CCTV Computers Status (4 PCs):*"]
                         for pc_name in DEFAULT_PC_NAMES:
                             data = active_computers.get(pc_name, {})
                             is_online = (now - data.get("last_ping", 0)) < 60
                             if is_online:
-                                status_icon = "🟢 *Online (Recording 2-min clips)*"
+                                status_icon = "🟢 *Online (CCTV Active)*"
                             else:
                                 ago = int((now - data.get("last_ping", 0)) / 60) if "last_ping" in data else None
                                 status_icon = f"🔴 *Offline* ({ago}m ago)" if ago else "🔴 *Offline / Ready*"
                             lines.append(f"• *{pc_name}:* {status_icon}")
                         send_telegram_message("\n".join(lines))
 
-                    elif cmd in ["/hidevideos", "/mutevideos"]:
-                        cfg["send_videos_to_telegram"] = False
-                        save_config(cfg)
-                        send_telegram_message("🔇 *Videos Hidden from Telegram:*\nVideos will not flood Telegram. They remain saved on the Web Dashboard.")
+                    elif cmd in ["/cam1", "/snap1", "/cam2", "/snap2", "/cam3", "/snap3", "/cam4", "/snap4", "/snap"]:
+                        idx_map = {"/cam1": "albayan 1", "/snap1": "albayan 1",
+                                   "/cam2": "albayan 2", "/snap2": "albayan 2",
+                                   "/cam3": "albayan 3", "/snap3": "albayan 3",
+                                   "/cam4": "albayan 4", "/snap4": "albayan 4"}
+                        target_pc = idx_map.get(cmd, "albayan 1")
+                        if cmd == "/snap" and len(parts) > 1:
+                            target_pc = normalize_pc_name(" ".join(parts[1:]))
 
-                    elif cmd in ["/showvideos", "/unmutevideos"]:
-                        cfg["send_videos_to_telegram"] = True
-                        save_config(cfg)
-                        send_telegram_message("📹 *Videos Enabled in Telegram:*\nNew clips will be sent here.")
+                        live_path = RECORDINGS_DIR / f"live_{target_pc}.jpg"
+                        if live_path.exists():
+                            now_str = datetime.now().strftime("%I:%M:%S %p")
+                            send_telegram_photo(live_path, f"📸 *[{target_pc.upper()}]* Live CCTV Screenshot ({now_str})")
+                        else:
+                            # Try finding latest screenshot
+                            shots = get_pc_screenshots(target_pc)
+                            if shots:
+                                send_telegram_photo(shots[-1], f"📸 *[{target_pc.upper()}]* Recent Screenshot")
+                            else:
+                                send_telegram_message(f"ℹ️ No screenshot available yet for {target_pc}.")
 
                     elif cmd == "/link":
                         lan_ip = get_lan_ip()
                         port = cfg.get("server_port", 8899)
-                        send_telegram_message(f"🌐 *Web Dashboard URL:*\nhttp://{lan_ip}:{port}\nPassword: `albayan@2026`")
-
-                    elif cmd == "/latest":
-                        target_pc = " ".join(parts[1:]).strip().lower() if len(parts) > 1 else None
-                        files = sorted(RECORDINGS_DIR.glob("*.mp4"), key=lambda f: f.stat().st_mtime, reverse=True)
-                        if target_pc:
-                            files = [f for f in files if f.name.lower().startswith(f"[{target_pc}]")]
-                        
-                        if files:
-                            latest_file = files[0]
-                            caption = f"📹 Latest recording: `{latest_file.name}`"
-                            cfg_token = cfg.get("telegram_bot_token")
-                            with open(latest_file, "rb") as vf:
-                                requests.post(
-                                    f"https://api.telegram.org/bot{cfg_token}/sendVideo",
-                                    data={"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"},
-                                    files={"video": vf},
-                                    timeout=45
-                                )
-                        else:
-                            msg = f"ℹ️ No recordings found" + (f" for {target_pc}" if target_pc else "") + " in the last 24h."
-                            send_telegram_message(msg)
+                        send_telegram_message(f"🌐 *CCTV Web Dashboard:*\nhttp://{lan_ip}:{port}\nPassword: `albayan@2026`")
 
         except Exception:
             pass
 
         await asyncio.sleep(3)
 
-async def auto_delete_old_recordings():
-    """Deletes recordings older than retention_hours (24 hours)."""
+async def auto_delete_old_files():
+    """Deletes screenshots & videos older than retention_hours (24 hours)."""
     global last_cleanup_time
-    print("[Cleanup] 24-hour auto-cleaner active.")
+    print("[Cleanup] 24-hour auto-cleaner active (Screenshots & Recordings).")
     while True:
         try:
             cfg = load_config()
@@ -271,14 +299,18 @@ async def auto_delete_old_recordings():
             now = time.time()
             deleted_count = 0
 
-            for file_path in RECORDINGS_DIR.glob("*.mp4"):
-                file_age = now - file_path.stat().st_mtime
-                if file_age > retention_seconds:
-                    try:
-                        file_path.unlink()
-                        deleted_count += 1
-                    except Exception:
-                        pass
+            # Delete old 5-min screenshots and old videos
+            for file_path in RECORDINGS_DIR.iterdir():
+                if file_path.name.startswith("live_"):
+                    continue # Keep live thumbnail
+                if file_path.suffix.lower() in [".jpg", ".jpeg", ".mp4", ".png"]:
+                    file_age = now - file_path.stat().st_mtime
+                    if file_age > retention_seconds:
+                        try:
+                            file_path.unlink()
+                            deleted_count += 1
+                        except Exception:
+                            pass
 
             if deleted_count > 0:
                 print(f"[Cleanup] Auto-deleted {deleted_count} file(s) older than 24 hours.")
@@ -291,7 +323,7 @@ async def auto_delete_old_recordings():
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(telegram_bot_poller())
-    asyncio.create_task(auto_delete_old_recordings())
+    asyncio.create_task(auto_delete_old_files())
     asyncio.create_task(auto_updater_task())
 
 # ----------------- CLIENT AUTO REGISTRATION -----------------
@@ -328,8 +360,8 @@ def register_client(request: Request, payload: dict):
         "computer_name": assigned_name,
         "server_url": f"http://{lan_ip}:{port}",
         "api_secret": cfg.get("api_secret", "secure_study_monitor_secret_key_8899"),
-        "fps": cfg.get("fps", 10),
-        "chunk_minutes": cfg.get("chunk_minutes", 2)
+        "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300),
+        "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 5)
     }
 
 # ----------------- DOWNLOAD ENDPOINTS -----------------
@@ -350,7 +382,7 @@ def download_setup_script(request: Request, session: str = Depends(verify_sessio
 
     script_content = f"""@echo off
 setlocal
-title Albayan Study Monitor - Auto Installer
+title Albayan CCTV Study Monitor - Auto Installer
 echo ========================================================
 echo   ALBAYAN LAB MONITOR - 1-CLICK CLIENT INSTALLER
 echo ========================================================
@@ -361,12 +393,12 @@ if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
 if not exist "%TARGET_DIR%\\client" mkdir "%TARGET_DIR%\\client"
 if not exist "%TARGET_DIR%\\client\\temp_records" mkdir "%TARGET_DIR%\\client\\temp_records"
 
-echo [1/4] Downloading latest software from server...
+echo [1/4] Downloading latest CCTV client from server...
 powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{server_base}/api/download/recorder.py', '%TARGET_DIR%\\client\\recorder.py')"
 
 echo.
 echo [2/4] Verifying Python and installing dependencies...
-python -m pip install mss imageio imageio-ffmpeg requests truststore pillow --quiet
+python -m pip install mss requests truststore pillow numpy --quiet
 
 echo.
 echo [3/4] Registering PC name (albayan 1, 2, 3, or 4)...
@@ -386,7 +418,7 @@ start "" pythonw "%TARGET_DIR%\\client\\recorder.py"
 echo.
 echo ========================================================
 echo   [SUCCESS] INSTALLED SUCCESSFULLY!
-echo   This PC is now active and monitored!
+echo   This PC is now active and transmitting to CCTV!
 echo ========================================================
 echo.
 pause
@@ -394,7 +426,7 @@ pause
     return Response(
         content=script_content,
         media_type="application/bat",
-        headers={"Content-Disposition": "attachment; filename=albayan_setup.bat"}
+        headers={"Content-Disposition": "attachment; filename=albayan_cctv_setup.bat"}
     )
 
 @app.get("/api/download/client-zip")
@@ -416,16 +448,229 @@ def download_client_zip(session: str = Depends(verify_session)):
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=albayan_monitor_full.zip"}
+        headers={"Content-Disposition": "attachment; filename=albayan_cctv_monitor.zip"}
     )
 
-# ----------------- WEB ROUTES -----------------
+# ----------------- CLIENT DATA INGESTION -----------------
 
-@app.get("/", response_class=HTMLResponse)
-def index_page(request: Request, session_token: Optional[str] = Depends(cookie_scheme)):
-    if not session_token or session_token not in active_sessions:
-        return get_login_html()
-    return get_dashboard_html()
+@app.post("/api/client/ping")
+def client_ping(
+    request: Request,
+    x_api_secret: Optional[str] = Header(None),
+    payload: dict = {}
+):
+    cfg = load_config()
+    if x_api_secret != cfg.get("api_secret"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    client_ip = request.client.host if request.client else "unknown"
+    raw_name = payload.get("computer_name", "albayan 1")
+    pc_name = normalize_pc_name(raw_name)
+
+    now = time.time()
+    is_new = pc_name not in active_computers or (now - active_computers[pc_name].get("last_ping", 0)) > 180
+    
+    if pc_name not in active_computers:
+        active_computers[pc_name] = {}
+    active_computers[pc_name]["last_ping"] = now
+    active_computers[pc_name]["ip"] = client_ip
+
+    if is_new:
+        now_str = datetime.now().strftime("%I:%M:%S %p")
+        send_telegram_message(f"🚨 *[{pc_name.upper()}]* Turned ON and CCTV Screen Monitoring started at *{now_str}* (IP: `{client_ip}`).")
+
+    return {"ok": True, "status": "active"}
+
+@app.post("/api/client/live_frame")
+async def client_live_frame(
+    request: Request,
+    frame: UploadFile = File(...),
+    computer_name: str = Form("albayan 1"),
+    x_api_secret: Optional[str] = Header(None)
+):
+    cfg = load_config()
+    if x_api_secret != cfg.get("api_secret"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    pc_name = normalize_pc_name(computer_name)
+    client_ip = request.client.host if request.client else "unknown"
+    
+    if pc_name not in active_computers:
+        active_computers[pc_name] = {}
+    active_computers[pc_name]["last_ping"] = time.time()
+    active_computers[pc_name]["last_live"] = time.time()
+    active_computers[pc_name]["ip"] = client_ip
+
+    dest_path = RECORDINGS_DIR / f"live_{pc_name}.jpg"
+    with open(dest_path, "wb") as f:
+        while chunk := await frame.read(1024 * 128):
+            f.write(chunk)
+
+    return {"ok": True}
+
+@app.post("/api/client/upload_screenshot")
+async def client_upload_screenshot(
+    request: Request,
+    screenshot: UploadFile = File(...),
+    computer_name: str = Form("albayan 1"),
+    timestamp: str = Form(""),
+    x_api_secret: Optional[str] = Header(None)
+):
+    cfg = load_config()
+    if x_api_secret != cfg.get("api_secret"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    pc_name = normalize_pc_name(computer_name)
+    client_ip = request.client.host if request.client else "unknown"
+    
+    if pc_name not in active_computers:
+        active_computers[pc_name] = {}
+    active_computers[pc_name]["last_ping"] = time.time()
+    active_computers[pc_name]["ip"] = client_ip
+
+    dest_path = RECORDINGS_DIR / screenshot.filename
+    with open(dest_path, "wb") as f:
+        while chunk := await screenshot.read(1024 * 256):
+            f.write(chunk)
+
+    # Also duplicate as live thumbnail
+    live_path = RECORDINGS_DIR / f"live_{pc_name}.jpg"
+    try:
+        import shutil
+        shutil.copyfile(dest_path, live_path)
+    except Exception:
+        pass
+
+    file_size_kb = round(dest_path.stat().st_size / 1024, 1)
+    print(f"[Screenshot] [{pc_name}] Received 5-min snapshot: {dest_path.name} ({file_size_kb} KB)")
+
+    return {"ok": True, "filename": dest_path.name}
+
+# ----------------- CCTV IMAGE & STREAM API -----------------
+
+@app.get("/api/live/{computer_name}")
+def get_live_frame(computer_name: str):
+    pc_name = normalize_pc_name(computer_name)
+    live_path = RECORDINGS_DIR / f"live_{pc_name}.jpg"
+
+    now = time.time()
+    data = active_computers.get(pc_name, {})
+    is_online = (now - data.get("last_ping", 0)) < 90
+
+    if is_online and live_path.exists():
+        return FileResponse(
+            live_path,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
+    else:
+        # Fallback to no-signal CCTV test pattern
+        content = generate_no_signal_image(pc_name)
+        return Response(
+            content=content,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+        )
+
+@app.get("/api/screenshots")
+def get_screenshots(
+    computer: str = Query("albayan 1"),
+    session: str = Depends(verify_session)
+):
+    pc_name = normalize_pc_name(computer)
+    files = get_pc_screenshots(pc_name)
+    results = []
+
+    now = time.time()
+    for f in files:
+        mtime = f.stat().st_mtime
+        age_hours = (now - mtime) / 3600
+        if age_hours > 24:
+            continue
+        
+        # parse timestamp from filename: [albayan 1]_YYYYMMDD_HHMMSS.jpg
+        name = f.name
+        try:
+            ts_part = name.split("]_")[1].replace(".jpg", "")
+            dt = datetime.strptime(ts_part, "%Y%m%d_%H%M%S")
+            time_label = dt.strftime("%I:%M %p")
+            date_label = dt.strftime("%b %d, %Y")
+            full_str = dt.strftime("%Y-%m-%d %I:%M:%S %p")
+        except Exception:
+            full_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %I:%M:%S %p")
+            time_label = datetime.fromtimestamp(mtime).strftime("%I:%M %p")
+            date_label = ""
+
+        results.append({
+            "filename": f.name,
+            "computer": pc_name,
+            "url": f"/api/screenshot/{f.name}",
+            "time_label": time_label,
+            "date_label": date_label,
+            "created_at": full_str,
+            "timestamp": mtime,
+            "size_kb": round(f.stat().st_size / 1024, 1)
+        })
+
+    return {
+        "computer": pc_name,
+        "total": len(results),
+        "screenshots": results
+    }
+
+@app.get("/api/screenshot/{filename}")
+def serve_screenshot(filename: str, session: str = Depends(verify_session)):
+    safe_name = Path(filename).name
+    path = RECORDINGS_DIR / safe_name
+    if path.exists():
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+    raise HTTPException(status_code=404, detail="Screenshot not found")
+
+# ----------------- SYSTEM STATUS & AUTH -----------------
+
+@app.get("/api/status")
+def get_system_status(session: str = Depends(verify_session)):
+    cfg = load_config()
+    chat_ids = cfg.get("telegram_chat_ids", [])
+    now = time.time()
+    
+    computers_list = []
+    online_count = 0
+
+    for pc_name in DEFAULT_PC_NAMES:
+        data = active_computers.get(pc_name, {})
+        is_online = (now - data.get("last_ping", 0)) < 60
+        if is_online:
+            online_count += 1
+
+        shots_count = len(get_pc_screenshots(pc_name))
+        computers_list.append({
+            "name": pc_name,
+            "is_online": is_online,
+            "ip": data.get("ip", "Offline / Ready"),
+            "snapshots_count": shots_count,
+            "last_seen_seconds": int(now - data.get("last_ping", 0)) if "last_ping" in data else None
+        })
+
+    all_shots = list(RECORDINGS_DIR.glob("*.jpg"))
+    total_size_bytes = sum(f.stat().st_size for f in all_shots)
+    lan_ip = get_lan_ip()
+    port = cfg.get("server_port", 8899)
+    
+    return {
+        "server_ip": lan_ip,
+        "server_port": port,
+        "computers": computers_list,
+        "total_online": online_count,
+        "total_snapshots": len([f for f in all_shots if not f.name.startswith("live_")]),
+        "total_size_mb": round(total_size_bytes / (1024 * 1024), 2),
+        "telegram_connected": len(chat_ids) > 0,
+        "retention_hours": cfg.get("retention_hours", 24)
+    }
 
 @app.post("/api/login")
 def login(payload: dict, response: Response):
@@ -452,197 +697,13 @@ def logout(response: Response, session_token: Optional[str] = Depends(cookie_sch
     response.delete_cookie("session_token")
     return {"ok": True}
 
-@app.get("/api/status")
-def get_system_status(session: str = Depends(verify_session)):
-    cfg = load_config()
-    chat_ids = cfg.get("telegram_chat_ids", [])
-    now = time.time()
-    
-    # Strictly return the 4 Albayan Computers - no duplicates!
-    computers_list = []
-    online_count = 0
+# ----------------- WEB PAGES (CCTV INTERFACE) -----------------
 
-    for pc_name in DEFAULT_PC_NAMES:
-        data = active_computers.get(pc_name, {})
-        is_online = (now - data.get("last_ping", 0)) < 60
-        if is_online:
-            online_count += 1
-        computers_list.append({
-            "name": pc_name,
-            "is_online": is_online,
-            "ip": data.get("ip", "Offline / Ready"),
-            "last_seen_seconds": int(now - data.get("last_ping", 0)) if "last_ping" in data else None
-        })
-
-    files = list(RECORDINGS_DIR.glob("*.mp4"))
-    total_size_bytes = sum(f.stat().st_size for f in files)
-    lan_ip = get_lan_ip()
-    port = cfg.get("server_port", 8899)
-    
-    return {
-        "server_ip": lan_ip,
-        "server_port": port,
-        "computers": computers_list,
-        "total_online": online_count,
-        "total_recordings": len(files),
-        "total_size_mb": round(total_size_bytes / (1024 * 1024), 2),
-        "telegram_connected": len(chat_ids) > 0,
-        "telegram_videos_enabled": cfg.get("send_videos_to_telegram", False),
-        "retention_hours": cfg.get("retention_hours", 24)
-    }
-
-@app.get("/api/recordings")
-def list_recordings(
-    computer: Optional[str] = Query(None),
-    session: str = Depends(verify_session)
-):
-    files = sorted(RECORDINGS_DIR.glob("*.mp4"), key=lambda f: f.stat().st_mtime, reverse=True)
-    results = []
-    now = time.time()
-    
-    for f in files:
-        name = f.name
-        raw_name = "albayan 1"
-        if name.startswith("[") and "]" in name:
-            raw_name = name[1:name.find("]")]
-        
-        pc_name = normalize_pc_name(raw_name)
-
-        if computer and computer != "all":
-            # Compare whitespace/case-insensitively
-            target = computer.replace(" ", "").lower()
-            item_pc = pc_name.replace(" ", "").lower()
-            if target != item_pc:
-                continue
-
-        mtime = f.stat().st_mtime
-        size_mb = round(f.stat().st_size / (1024 * 1024), 2)
-        created_dt = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %I:%M:%S %p")
-        age_hours = round((now - mtime) / 3600, 1)
-        hours_remaining = round(max(0, 24 - age_hours), 1)
-
-        results.append({
-            "filename": f.name,
-            "computer": pc_name,
-            "created_at": created_dt,
-            "size_mb": size_mb,
-            "hours_remaining": hours_remaining
-        })
-
-    return {"recordings": results, "all_computers": DEFAULT_PC_NAMES}
-
-@app.delete("/api/recordings/{filename}")
-def delete_recording(filename: str, session: str = Depends(verify_session)):
-    safe_name = Path(filename).name
-    file_path = RECORDINGS_DIR / safe_name
-    if file_path.exists():
-        file_path.unlink()
-        return {"ok": True, "message": "File deleted"}
-    raise HTTPException(status_code=404, detail="File not found")
-
-@app.get("/api/video/{filename}")
-def stream_video(filename: str, request: Request, session_token: Optional[str] = Depends(cookie_scheme)):
+@app.get("/", response_class=HTMLResponse)
+def index_page(request: Request, session_token: Optional[str] = Depends(cookie_scheme)):
     if not session_token or session_token not in active_sessions:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    safe_name = Path(filename).name
-    file_path = RECORDINGS_DIR / safe_name
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    file_size = file_path.stat().st_size
-    range_header = request.headers.get("Range")
-
-    if range_header:
-        parts = range_header.replace("bytes=", "").split("-")
-        start = int(parts[0]) if parts[0] else 0
-        end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
-        end = min(end, file_size - 1)
-        chunk_size = end - start + 1
-
-        def iterfile():
-            with open(file_path, "rb") as f:
-                f.seek(start)
-                remaining = chunk_size
-                while remaining > 0:
-                    read_bytes = min(remaining, 64 * 1024)
-                    data = f.read(read_bytes)
-                    if not data:
-                        break
-                    remaining -= len(data)
-                    yield data
-
-        headers = {
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(chunk_size),
-            "Content-Type": "video/mp4",
-        }
-        return StreamingResponse(iterfile(), status_code=206, headers=headers)
-
-    def full_iter():
-        with open(file_path, "rb") as f:
-            while chunk := f.read(64 * 1024):
-                yield chunk
-
-    return StreamingResponse(full_iter(), media_type="video/mp4")
-
-# ----------------- CLIENT ENDPOINTS -----------------
-
-@app.post("/api/client/ping")
-def client_ping(
-    request: Request,
-    x_api_secret: Optional[str] = Header(None),
-    payload: dict = {}
-):
-    cfg = load_config()
-    if x_api_secret != cfg.get("api_secret"):
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    client_ip = request.client.host if request.client else "unknown"
-    raw_name = payload.get("computer_name", "albayan 1")
-    pc_name = normalize_pc_name(raw_name)
-
-    now = time.time()
-    is_new = pc_name not in active_computers or (now - active_computers[pc_name]["last_ping"]) > 180
-    active_computers[pc_name] = {"last_ping": now, "ip": client_ip}
-
-    if is_new:
-        now_str = datetime.now().strftime("%I:%M:%S %p")
-        send_telegram_message(f"🚨 *[{pc_name}]* Turned ON and Screen Monitoring started at *{now_str}* (IP: `{client_ip}`).")
-
-    return {"ok": True, "status": "active"}
-
-@app.post("/api/client/upload")
-async def client_upload(
-    request: Request,
-    video: UploadFile = File(...),
-    computer_name: str = Form("albayan 1"),
-    x_api_secret: Optional[str] = Header(None)
-):
-    cfg = load_config()
-    if x_api_secret != cfg.get("api_secret"):
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    pc_name = normalize_pc_name(computer_name)
-    client_ip = request.client.host if request.client else "unknown"
-    active_computers[pc_name] = {"last_ping": time.time(), "ip": client_ip}
-
-    dest_path = RECORDINGS_DIR / video.filename
-    with open(dest_path, "wb") as f:
-        while chunk := await video.read(1024 * 1024):
-            f.write(chunk)
-
-    file_size_mb = round(dest_path.stat().st_size / (1024 * 1024), 2)
-    print(f"[Upload] [{pc_name}] Received 2-minute video: {dest_path.name} ({file_size_mb} MB)")
-
-    if cfg.get("send_videos_to_telegram", False):
-        caption = f"📹 *[{pc_name}] Screen Recording*\nFile: `{dest_path.name}`\nSize: {file_size_mb} MB"
-        send_telegram_video(dest_path, caption)
-
-    return {"ok": True, "filename": dest_path.name}
-
-# ----------------- HTML TEMPLATES -----------------
+        return get_login_html()
+    return get_cctv_dashboard_html()
 
 def get_login_html():
     return """<!DOCTYPE html>
@@ -650,41 +711,49 @@ def get_login_html():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Albayan Lab Study Monitor - Login</title>
+  <title>Albayan CCTV Monitor - Login</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
-  <div class="w-full max-w-md bg-slate-900/90 border border-slate-800 rounded-2xl p-8 shadow-2xl backdrop-blur-xl">
+<body class="bg-slate-950 flex items-center justify-center min-h-screen p-4 text-slate-100">
+  <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
+    <div class="absolute -right-12 -top-12 w-40 h-40 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none"></div>
     <div class="text-center mb-8">
-      <div class="w-16 h-16 bg-gradient-to-tr from-indigo-500 to-cyan-400 rounded-2xl mx-auto flex items-center justify-center text-3xl shadow-lg shadow-indigo-500/20 mb-4">
-        <i class="fa-solid fa-graduation-cap text-white"></i>
+      <div class="w-16 h-16 bg-gradient-to-tr from-indigo-600 to-emerald-500 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-indigo-600/30 text-white text-2xl">
+        <i class="fa-solid fa-video"></i>
       </div>
-      <h1 class="text-2xl font-bold tracking-tight text-white">Albayan Study Monitor</h1>
-      <p class="text-sm text-slate-400 mt-1">Multi-PC Screen Archive (albayan 1, 2, 3, 4)</p>
+      <h1 class="text-2xl font-bold tracking-tight text-white">Albayan CCTV Lab</h1>
+      <p class="text-xs text-slate-400 mt-1">4-Screen Surveillance & Study Monitor</p>
     </div>
 
-    <form id="loginForm" class="space-y-5">
+    <form id="loginForm" class="space-y-4">
       <div>
         <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Master Password</label>
         <div class="relative">
-          <input type="password" id="password" required placeholder="Enter password (albayan@2026)..." 
-            class="w-full bg-slate-950/70 border border-slate-800 rounded-xl px-4 py-3 pl-11 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all">
-          <i class="fa-solid fa-lock absolute left-4 top-3.5 text-slate-500"></i>
+          <input 
+            type="password" 
+            id="password" 
+            placeholder="••••••••••••" 
+            required
+            class="w-full bg-slate-950 border border-slate-700/80 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+          >
+          <span class="absolute right-4 top-3 text-slate-500"><i class="fa-solid fa-lock"></i></span>
         </div>
       </div>
 
-      <div id="errorMsg" class="hidden text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg p-3 text-center"></div>
+      <div id="loginError" class="hidden text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-xl p-3 text-center"></div>
 
-      <button type="submit" 
-        class="w-full bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white font-semibold py-3 px-4 rounded-xl shadow-lg shadow-indigo-600/25 transition-all duration-200 flex items-center justify-center gap-2">
-        <span>Unlock Lab Dashboard</span>
-        <i class="fa-solid fa-arrow-right"></i>
+      <button 
+        type="submit" 
+        class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 rounded-xl transition text-sm shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2"
+      >
+        <span>Open CCTV Dashboard</span>
+        <i class="fa-solid fa-arrow-right text-xs"></i>
       </button>
     </form>
 
-    <div class="mt-8 pt-6 border-t border-slate-800/80 text-center text-xs text-slate-500">
-      <p><i class="fa-solid fa-clock-rotate-left mr-1"></i> Auto-deletion active: Videos kept for 24 hours</p>
+    <div class="mt-8 pt-6 border-t border-slate-800/80 text-center text-[11px] text-slate-500">
+      <p>Albayan Computer Lab • 24-Hour Auto-Purge</p>
     </div>
   </div>
 
@@ -692,7 +761,7 @@ def get_login_html():
     document.getElementById('loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const pwd = document.getElementById('password').value;
-      const err = document.getElementById('errorMsg');
+      const err = document.getElementById('loginError');
       err.classList.add('hidden');
       try {
         const res = await fetch('/api/login', {
@@ -715,354 +784,556 @@ def get_login_html():
 </body>
 </html>"""
 
-def get_dashboard_html():
+def get_cctv_dashboard_html():
     return """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Albayan Lab Study Monitor</title>
+  <title>Albayan CCTV Monitor - 4 Camera Grid</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.95); }
+    }
+    .pulse-rec {
+      animation: pulse-slow 1.5s infinite ease-in-out;
+    }
+    .cctv-scanline {
+      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%);
+      background-size: 100% 4px;
+    }
+    .osd-font {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+  </style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen">
-  <!-- Top Navigation -->
-  <header class="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-30">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans select-none">
+
+  <!-- Top CCTV Command Header -->
+  <header class="border-b border-slate-800/80 bg-slate-900/90 backdrop-blur-md sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-3 sm:px-6 h-16 flex items-center justify-between">
       <div class="flex items-center gap-3">
-        <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white text-lg shadow-md shadow-indigo-600/30">
-          <i class="fa-solid fa-graduation-cap"></i>
+        <div class="w-10 h-10 bg-emerald-600 rounded-xl flex items-center justify-center text-white text-lg shadow-md shadow-emerald-600/30">
+          <i class="fa-solid fa-video"></i>
         </div>
         <div>
-          <h1 class="text-lg font-bold text-white tracking-tight">Albayan Study Monitor</h1>
-          <p class="text-xs text-slate-400">Lab Parental Control & Screen Review</p>
+          <div class="flex items-center gap-2">
+            <h1 class="text-base sm:text-lg font-bold text-white tracking-tight">ALBAYAN CCTV LAB</h1>
+            <span class="bg-red-500/20 text-red-400 text-[10px] font-mono px-2 py-0.5 rounded border border-red-500/30 flex items-center gap-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-red-500 pulse-rec"></span> LIVE DVR
+            </span>
+          </div>
+          <p class="text-[11px] text-slate-400">4-Camera Surveillance & 5-Min History Scrubber</p>
         </div>
       </div>
 
-      <div class="flex items-center gap-4">
-        <div class="hidden sm:flex items-center gap-2 bg-slate-800/60 px-3 py-1.5 rounded-lg border border-slate-700/50 text-xs">
-          <span class="text-slate-400">Server:</span>
-          <span id="serverIpPill" class="text-indigo-400 font-mono font-semibold">192.168.1.3:8899</span>
+      <!-- Controls & Setup button -->
+      <div class="flex items-center gap-2 sm:gap-3">
+        <a href="/api/download/setup-script" download="albayan_setup.bat" class="hidden sm:flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow-md transition">
+          <i class="fa-solid fa-cloud-arrow-down"></i>
+          <span>1-Click PC Installer</span>
+        </a>
+
+        <div class="hidden md:flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/60 text-xs">
+          <span class="text-slate-400">LAN:</span>
+          <span id="serverIpBadge" class="text-indigo-400 font-mono font-semibold">192.168.1.3:8899</span>
         </div>
 
-        <button onclick="logout()" class="text-xs text-slate-400 hover:text-white bg-slate-800/50 hover:bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700/50 transition">
-          <i class="fa-solid fa-arrow-right-from-bracket mr-1"></i> Logout
+        <a href="https://t.me/my_library_data_bot" target="_blank" class="bg-sky-600/20 hover:bg-sky-600/30 text-sky-400 text-xs px-2.5 py-1.5 rounded-lg border border-sky-500/30 transition flex items-center gap-1.5">
+          <i class="fa-brands fa-telegram"></i>
+          <span class="hidden sm:inline">Bot</span>
+        </a>
+
+        <button onclick="logout()" class="text-xs text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 transition flex items-center gap-1.5">
+          <i class="fa-solid fa-arrow-right-from-bracket"></i>
+          <span class="hidden sm:inline">Logout</span>
         </button>
       </div>
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-    <!-- ⚡ WEB DOWNLOAD & INSTALL BANNER -->
-    <div class="bg-gradient-to-r from-indigo-950/80 via-slate-900 to-indigo-950/80 border border-indigo-500/40 rounded-2xl p-6 mb-8 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl">
-      <div class="flex items-center gap-4">
-        <div class="w-14 h-14 bg-gradient-to-tr from-indigo-600 to-cyan-500 rounded-2xl flex items-center justify-center text-white text-2xl shadow-lg shadow-indigo-600/30 shrink-0">
-          <i class="fa-solid fa-cloud-arrow-down"></i>
-        </div>
-        <div>
-          <div class="flex items-center gap-2">
-            <h3 class="text-lg font-bold text-white tracking-tight">Install Software on this PC</h3>
-            <span class="bg-indigo-500/20 text-indigo-300 text-[11px] font-mono px-2 py-0.5 rounded border border-indigo-500/30">1-Click Setup</span>
-          </div>
-          <p class="text-xs text-slate-300 mt-1 max-w-xl">
-            ലാബിലെ മറ്റേതെങ്കിലും കമ്പ്യൂട്ടറിൽ (PC 2, PC 3, PC 4) വെബ്സൈറ്റ് തുറന്ന ശേഷം താഴെയുള്ള ബട്ടൺ ക്ലിക്ക് ചെയ്താൽ സോഫ്റ്റ്‌വെയർ ഉടൻ ഇൻസ്റ്റാൾ ആകും!
-          </p>
-        </div>
-      </div>
-      <div class="flex flex-wrap items-center gap-3 shrink-0">
-        <a href="/api/download/setup-script" download="albayan_setup.bat" class="px-5 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-600/30 transition flex items-center gap-2">
-          <i class="fa-solid fa-bolt text-amber-300"></i> Download 1-Click Installer (.bat)
-        </a>
-        <a href="/api/download/client-zip" download="albayan_monitor_full.zip" class="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold border border-slate-700 transition flex items-center gap-2">
-          <i class="fa-solid fa-file-zipper"></i> Full Zip Package
-        </a>
-      </div>
-    </div>
-
-    <!-- Lab Computers Status Cards (albayan 1, 2, 3, 4) - NO DUPLICATES -->
-    <div class="mb-8">
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="text-sm uppercase font-semibold text-slate-400 tracking-wider">
-          <i class="fa-solid fa-desktop mr-2 text-indigo-400"></i>Albayan Computers (4 PCs)
-        </h3>
-        <span id="onlineCounter" class="text-xs font-semibold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20">
-          0 Online
-        </span>
-      </div>
-
-      <div id="computersBar" class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <!-- Rendered dynamically -->
-      </div>
-    </div>
-
-    <!-- Quick Stats -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
-        <div class="flex items-center justify-between">
-          <span class="text-xs uppercase font-semibold text-slate-400">Recordings (Last 24h)</span>
-          <i class="fa-solid fa-film text-cyan-400 text-lg"></i>
-        </div>
-        <p id="statTotalClips" class="text-2xl font-bold text-white mt-2">0</p>
-        <p class="text-xs text-slate-500 mt-1" id="statTotalSize">0 MB stored (2-min clips)</p>
-      </div>
-
-      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
-        <div class="flex items-center justify-between">
-          <span class="text-xs uppercase font-semibold text-slate-400">Auto-Delete Policy</span>
-          <i class="fa-solid fa-trash-clock text-amber-400 text-lg"></i>
-        </div>
-        <p class="text-2xl font-bold text-amber-300 mt-2">24 Hours</p>
-        <p class="text-xs text-slate-500 mt-1">Older files automatically wiped</p>
-      </div>
-
-      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
-        <div class="flex items-center justify-between">
-          <span class="text-xs uppercase font-semibold text-slate-400">Telegram Bot</span>
-          <i class="fa-brands fa-telegram text-sky-400 text-lg"></i>
-        </div>
-        <div class="flex items-center justify-between mt-2">
-          <p id="statTelegram" class="text-lg font-bold text-sky-400">Connected</p>
-          <span id="telegramModeBadge" class="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-            Videos Hidden
-          </span>
-        </div>
-        <div class="flex items-center justify-between text-xs mt-2">
-          <a href="https://t.me/my_library_data_bot" target="_blank" class="text-sky-300 hover:underline">
-            @my_library_data_bot <i class="fa-solid fa-arrow-up-right-from-square text-[10px]"></i>
-          </a>
-          <span class="text-slate-500">2-min chunk active</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Video Player Section (When a video is clicked) -->
-    <div id="playerSection" class="hidden mb-8 bg-slate-900 border border-indigo-500/30 rounded-2xl p-5 shadow-2xl">
-      <div class="flex items-center justify-between mb-4">
-        <div>
-          <div class="flex items-center gap-2">
-            <span id="currentVideoPc" class="px-2 py-0.5 rounded bg-indigo-600/30 text-indigo-300 text-xs font-mono font-bold">albayan 1</span>
-            <h2 id="currentVideoTitle" class="text-lg font-semibold text-white">Video Player</h2>
-          </div>
-          <p id="currentVideoSub" class="text-xs text-slate-400 mt-0.5">Playing chunk</p>
-        </div>
-        <button onclick="closePlayer()" class="text-slate-400 hover:text-white px-3 py-1 bg-slate-800 rounded-lg text-xs">
-          <i class="fa-solid fa-xmark mr-1"></i> Close
+  <!-- View Switcher & Toolbar -->
+  <div class="bg-slate-900/60 border-b border-slate-800/80 px-4 py-2.5">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+      <!-- Camera Selection Tabs -->
+      <div class="flex items-center gap-1.5 bg-slate-950/80 p-1 rounded-xl border border-slate-800 text-xs">
+        <button id="btnViewQuad" onclick="setViewMode('quad')" class="px-3 py-1.5 rounded-lg font-semibold bg-indigo-600 text-white shadow transition flex items-center gap-1.5">
+          <i class="fa-solid fa-table-cells-large"></i> <span>QUAD VIEW (4 CAM)</span>
+        </button>
+        <button id="btnViewCam1" onclick="setViewMode('albayan 1')" class="px-2.5 py-1.5 rounded-lg font-medium text-slate-400 hover:text-white hover:bg-slate-800/60 transition">
+          CAM 1
+        </button>
+        <button id="btnViewCam2" onclick="setViewMode('albayan 2')" class="px-2.5 py-1.5 rounded-lg font-medium text-slate-400 hover:text-white hover:bg-slate-800/60 transition">
+          CAM 2
+        </button>
+        <button id="btnViewCam3" onclick="setViewMode('albayan 3')" class="px-2.5 py-1.5 rounded-lg font-medium text-slate-400 hover:text-white hover:bg-slate-800/60 transition">
+          CAM 3
+        </button>
+        <button id="btnViewCam4" onclick="setViewMode('albayan 4')" class="px-2.5 py-1.5 rounded-lg font-medium text-slate-400 hover:text-white hover:bg-slate-800/60 transition">
+          CAM 4
         </button>
       </div>
-      <div class="bg-black rounded-xl overflow-hidden aspect-video max-h-[550px] flex items-center justify-center">
-        <video id="mainVideoPlayer" controls autoplay class="w-full h-full" preload="auto">
-          Your browser does not support HTML5 video.
-        </video>
-      </div>
-      <div class="mt-4 flex flex-wrap items-center justify-between gap-4">
-        <div class="flex items-center gap-2">
-          <span class="text-xs text-slate-400 font-semibold uppercase">Speed:</span>
-          <button onclick="setSpeed(1.0)" class="speed-btn px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-300 hover:bg-slate-700">1.0x</button>
-          <button onclick="setSpeed(1.25)" class="speed-btn px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-300 hover:bg-slate-700">1.25x</button>
-          <button onclick="setSpeed(1.5)" class="speed-btn px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-300 hover:bg-slate-700">1.5x</button>
-          <button onclick="setSpeed(2.0)" class="speed-btn px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-300 hover:bg-slate-700">2.0x</button>
-        </div>
-        <div class="flex items-center gap-3">
-          <a id="downloadBtn" href="#" download class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium">
-            <i class="fa-solid fa-download mr-1"></i> Download Clip
-          </a>
-        </div>
+
+      <!-- Quick Status Badges -->
+      <div class="flex items-center gap-3 text-xs">
+        <span id="activeCamBadge" class="text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20 font-semibold flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span> <span id="onlineCountText">0 Online</span>
+        </span>
+        <span class="hidden sm:inline-block text-slate-500 font-mono text-[11px]">
+          <i class="fa-solid fa-clock-rotate-left mr-1"></i> Auto-wipe: 24h
+        </span>
       </div>
     </div>
+  </div>
 
-    <!-- Recordings List with Filter -->
-    <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-6">
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-        <div>
-          <h2 class="text-lg font-bold text-white tracking-tight">Screen Recordings (Last 24 Hours)</h2>
-          <p class="text-xs text-slate-400 mt-1">Recorded at 10 FPS in 2-minute clips. Plays smoothly in browser.</p>
-        </div>
-        
-        <div class="flex items-center gap-3">
-          <label class="text-xs text-slate-400 font-semibold uppercase">Filter PC:</label>
-          <select id="pcFilterSelect" onchange="loadRecordings()" class="bg-slate-800 border border-slate-700 text-white rounded-lg px-3 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none">
-            <option value="all">All Computers</option>
-            <option value="albayan 1">albayan 1</option>
-            <option value="albayan 2">albayan 2</option>
-            <option value="albayan 3">albayan 3</option>
-            <option value="albayan 4">albayan 4</option>
-          </select>
-
-          <button onclick="loadRecordings()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition flex items-center gap-1.5">
-            <i class="fa-solid fa-rotate-right"></i> Refresh
-          </button>
-        </div>
-      </div>
-
-      <div id="videoGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
-
-      <div id="emptyState" class="hidden py-16 text-center">
-        <div class="w-16 h-16 bg-slate-800/50 rounded-2xl mx-auto flex items-center justify-center text-slate-500 text-2xl mb-3">
-          <i class="fa-solid fa-video-slash"></i>
-        </div>
-        <h3 class="text-base font-semibold text-slate-300">No Recordings Found</h3>
-        <p class="text-xs text-slate-500 max-w-sm mx-auto mt-1">
-          Each computer uploads a 2-minute video clip as soon as it completes. Please wait a moment if the PC just started!
-        </p>
-      </div>
+  <!-- CCTV Main Workspace -->
+  <main class="max-w-7xl mx-auto px-2 sm:px-4 py-4 sm:py-6 flex-1 w-full">
+    
+    <!-- 2x2 CCTV Grid Container -->
+    <div id="cctvGrid" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <!-- 4 Camera Panels generated dynamically -->
     </div>
+
   </main>
 
+  <!-- Fullscreen Modal Viewer -->
+  <div id="fullscreenModal" class="fixed inset-0 z-50 bg-black/95 hidden flex flex-col p-4 justify-between">
+    <div class="flex items-center justify-between text-white border-b border-slate-800 pb-2">
+      <div class="flex items-center gap-2">
+        <span id="modalCamTitle" class="font-mono text-emerald-400 font-bold text-sm">CAM 01 // ALBAYAN 1</span>
+        <span id="modalCamStatus" class="text-xs bg-red-600/30 text-red-300 px-2 py-0.5 rounded font-mono">LIVE</span>
+      </div>
+      <button onclick="closeFullscreen()" class="text-slate-400 hover:text-white text-lg px-3 py-1 bg-slate-800 rounded-lg">
+        <i class="fa-solid fa-xmark"></i> Close
+      </button>
+    </div>
+    <div class="flex-1 flex items-center justify-center p-2 relative">
+      <img id="modalImg" class="max-h-[85vh] max-w-full rounded border border-slate-800 shadow-2xl object-contain" src="" alt="Fullscreen Feed">
+    </div>
+  </div>
+
   <script>
-    async function updateStatus() {
-      try {
-        const res = await fetch('/api/status');
-        if (res.status === 401) { window.location.reload(); return; }
-        const data = await res.json();
-        
-        document.getElementById('serverIpPill').innerText = `${data.server_ip}:${data.server_port}`;
+    const CAM_NAMES = ["albayan 1", "albayan 2", "albayan 3", "albayan 4"];
+    let currentViewMode = "quad"; // "quad" or specific pc name
+    let camStates = {}; // Stores live vs history mode, playback index, screenshots array
+    let autoPlayTimers = {};
 
-        const compBar = document.getElementById('computersBar');
-        compBar.innerHTML = '';
-        
-        const computers = data.computers || [];
-        computers.forEach(c => {
-          const card = document.createElement('div');
-          card.className = `p-3.5 rounded-xl border flex items-center justify-between ${
-            c.is_online 
-              ? 'bg-emerald-500/5 border-emerald-500/30' 
-              : 'bg-slate-900/40 border-slate-800'
-          }`;
-          card.innerHTML = `
-            <div>
-              <div class="flex items-center gap-2">
-                <span class="w-2 h-2 rounded-full ${c.is_online ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}"></span>
-                <span class="text-sm font-bold text-white">${c.name}</span>
-              </div>
-              <p class="text-[11px] text-slate-400 mt-1 font-mono">${c.ip}</p>
+    CAM_NAMES.forEach((name, idx) => {
+      camStates[name] = {
+        mode: "live", // "live" or "history"
+        historyIndex: 0,
+        screenshots: [],
+        isPlaying: false,
+        lastLiveUrl: `/api/live/${encodeURIComponent(name)}?t=${Date.now()}`
+      };
+    });
+
+    // ----------------- RENDER CCTV CAMERAS -----------------
+
+    function initCCTVGrid() {
+      const grid = document.getElementById("cctvGrid");
+      grid.innerHTML = "";
+
+      CAM_NAMES.forEach((camName, idx) => {
+        const camId = `0${idx + 1}`;
+        const panel = document.createElement("div");
+        panel.id = `panel_${camName.replace(' ', '_')}`;
+        panel.className = "bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col transition";
+
+        panel.innerHTML = `
+          <!-- Camera Header Bar -->
+          <div class="bg-slate-950/90 px-3 sm:px-4 py-2 border-b border-slate-800 flex items-center justify-between text-xs">
+            <div class="flex items-center gap-2 font-mono">
+              <span class="bg-slate-800 text-slate-300 px-2 py-0.5 rounded font-bold">CH ${camId}</span>
+              <span class="text-white font-semibold uppercase tracking-wider">${camName}</span>
+              <span id="badge_status_${idx}" class="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400">
+                OFFLINE
+              </span>
             </div>
-            <span class="text-[11px] font-semibold ${c.is_online ? 'text-emerald-400' : 'text-slate-500'}">
-              ${c.is_online ? 'REC 10 FPS' : 'Offline'}
-            </span>
-          `;
-          compBar.appendChild(card);
-        });
 
-        document.getElementById('onlineCounter').innerText = `${data.total_online} Online`;
-        document.getElementById('statTotalClips').innerText = data.total_recordings;
-        document.getElementById('statTotalSize').innerText = `${data.total_size_mb} MB stored`;
-        document.getElementById('statTelegram').innerText = data.telegram_connected ? 'Connected ✅' : 'Waiting for /start';
-        
-        const modeBadge = document.getElementById('telegramModeBadge');
-        if (data.telegram_videos_enabled) {
-          modeBadge.innerText = 'Videos Sent 📹';
-          modeBadge.className = 'text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
-        } else {
-          modeBadge.innerText = 'Videos Hidden 🔇';
-          modeBadge.className = 'text-[11px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20';
-        }
-
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    async function loadRecordings() {
-      try {
-        const filterVal = document.getElementById('pcFilterSelect').value;
-        const url = filterVal && filterVal !== 'all' 
-          ? `/api/recordings?computer=${encodeURIComponent(filterVal)}`
-          : '/api/recordings';
-
-        const res = await fetch(url);
-        if (res.status === 401) { window.location.reload(); return; }
-        const data = await res.json();
-        
-        const grid = document.getElementById('videoGrid');
-        const empty = document.getElementById('emptyState');
-
-        grid.innerHTML = '';
-        if (!data.recordings || data.recordings.length === 0) {
-          empty.classList.remove('hidden');
-          return;
-        }
-        empty.classList.add('hidden');
-
-        data.recordings.forEach(rec => {
-          const card = document.createElement('div');
-          card.className = 'bg-slate-950/60 border border-slate-800 hover:border-indigo-500/40 rounded-xl p-4 transition-all duration-200 group flex flex-col justify-between';
-          card.innerHTML = `
-            <div>
-              <div class="relative bg-slate-900 rounded-lg aspect-video flex items-center justify-center overflow-hidden mb-3 group-hover:bg-slate-800 transition">
-                <i class="fa-solid fa-play text-2xl text-indigo-400 group-hover:scale-110 transition"></i>
-                <button onclick="playVideo('${rec.filename}', '${rec.computer}', '${rec.created_at}')" class="absolute inset-0 w-full h-full focus:outline-none"></button>
-                <span class="absolute top-2 left-2 bg-indigo-600/80 px-2 py-0.5 rounded text-[11px] text-white font-mono font-bold">${rec.computer}</span>
-                <span class="absolute bottom-2 right-2 bg-black/70 px-2 py-0.5 rounded text-[11px] text-slate-300 font-mono">2 Min (10 FPS)</span>
-              </div>
-              <h4 class="text-sm font-semibold text-white tracking-tight truncate">${rec.filename}</h4>
-              <p class="text-xs text-slate-400 mt-1"><i class="fa-regular fa-clock mr-1"></i> ${rec.created_at}</p>
+            <div class="flex items-center gap-2">
+              <span id="clock_${idx}" class="font-mono text-emerald-400 text-[11px] hidden sm:inline">--:--:--</span>
+              <button onclick="toggleFullscreen('${camName}')" title="Fullscreen" class="text-slate-400 hover:text-white p-1">
+                <i class="fa-solid fa-expand"></i>
+              </button>
             </div>
+          </div>
+
+          <!-- Screen Canvas with CCTV OSD -->
+          <div class="relative bg-black aspect-video flex items-center justify-center overflow-hidden group">
+            <img 
+              id="img_${idx}" 
+              src="/api/live/${encodeURIComponent(camName)}" 
+              alt="${camName} Screen" 
+              class="w-full h-full object-contain"
+            />
             
-            <div class="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
-              <span class="text-slate-400 font-mono">${rec.size_mb} MB</span>
-              <span class="text-amber-400 font-mono text-[11px]">Expires in ${rec.hours_remaining}h</span>
-              <div class="flex items-center gap-2">
-                <button onclick="deleteRecording('${rec.filename}')" class="text-slate-500 hover:text-rose-400 p-1 transition" title="Delete Now">
-                  <i class="fa-regular fa-trash-can"></i>
+            <!-- Retro OSD Scanlines & Labels -->
+            <div class="absolute inset-0 pointer-events-none cctv-scanline opacity-30"></div>
+
+            <!-- Top Left CCTV OSD -->
+            <div class="absolute top-2 left-2 pointer-events-none font-mono text-[11px] text-emerald-400 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] flex flex-col gap-0.5">
+              <div class="flex items-center gap-1.5 font-bold">
+                <span id="osd_rec_${idx}" class="w-2 h-2 rounded-full bg-red-500 pulse-rec"></span>
+                <span id="osd_title_${idx}">REC [${camName.toUpperCase()}]</span>
+              </div>
+              <div id="osd_sub_${idx}" class="text-[10px] text-slate-300">5-MIN SNAPSHOT MODE</div>
+            </div>
+
+            <!-- Bottom Right CCTV OSD -->
+            <div class="absolute bottom-2 right-2 pointer-events-none font-mono text-[10px] text-emerald-400 bg-black/60 px-2 py-0.5 rounded border border-emerald-500/20">
+              <span id="osd_frame_info_${idx}">LIVE FEED</span>
+            </div>
+          </div>
+
+          <!-- CCTV DVR Playback Toolbar (Directly beneath camera) -->
+          <div class="bg-slate-950 px-3 py-2 border-t border-slate-800 flex flex-col gap-2">
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-1.5">
+                <button 
+                  id="btn_live_${idx}" 
+                  onclick="setCamMode('${camName}', 'live')" 
+                  class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white shadow transition flex items-center gap-1"
+                >
+                  <i class="fa-solid fa-circle text-[8px] text-white pulse-rec"></i> Live
+                </button>
+                <button 
+                  id="btn_hist_${idx}" 
+                  onclick="setCamMode('${camName}', 'history')" 
+                  class="px-2.5 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-800 transition flex items-center gap-1"
+                >
+                  <i class="fa-solid fa-clock-rotate-left text-xs text-amber-400"></i> 5-Min Reel
                 </button>
               </div>
+
+              <!-- History Playback Controls (Visible only in History Mode) -->
+              <div id="hist_controls_${idx}" class="hidden flex items-center gap-1">
+                <button onclick="stepHistory('${camName}', -1)" title="Previous 5-Min Snapshot" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded transition">
+                  <i class="fa-solid fa-backward-step"></i>
+                </button>
+                <button id="btn_play_${idx}" onclick="togglePlayHistory('${camName}')" class="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded transition flex items-center gap-1">
+                  <i class="fa-solid fa-play text-[10px]"></i> Play
+                </button>
+                <button onclick="stepHistory('${camName}', 1)" title="Next 5-Min Snapshot" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded transition">
+                  <i class="fa-solid fa-forward-step"></i>
+                </button>
+              </div>
+
+              <!-- Snapshot download -->
+              <button onclick="downloadCurrentSnapshot('${camName}')" title="Download Full Snapshot" class="text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-800 px-2 py-1 rounded text-xs transition">
+                <i class="fa-solid fa-download"></i>
+              </button>
             </div>
-          `;
-          grid.appendChild(card);
-        });
-      } catch (e) {
-        console.error(e);
-      }
-    }
 
-    function playVideo(filename, computer, timestamp) {
-      const section = document.getElementById('playerSection');
-      const player = document.getElementById('mainVideoPlayer');
-      const title = document.getElementById('currentVideoTitle');
-      const sub = document.getElementById('currentVideoSub');
-      const pcBadge = document.getElementById('currentVideoPc');
-      const dl = document.getElementById('downloadBtn');
+            <!-- Scrubber Slider for 5-Min History -->
+            <div id="scrubber_container_${idx}" class="hidden pt-1 border-t border-slate-900 flex items-center gap-2">
+              <input 
+                id="slider_${idx}" 
+                type="range" 
+                min="0" 
+                max="0" 
+                value="0" 
+                oninput="onScrubberSlide('${camName}', this.value)" 
+                class="w-full accent-indigo-500 bg-slate-800 h-1.5 rounded cursor-pointer"
+              />
+              <span id="slider_label_${idx}" class="font-mono text-[10px] text-slate-400 shrink-0 w-28 text-right">00:00 AM</span>
+            </div>
+          </div>
+        `;
 
-      pcBadge.innerText = computer;
-      title.innerText = filename;
-      sub.innerText = `Recorded from ${computer} at ${timestamp}`;
-      player.src = `/api/video/${filename}`;
-      dl.href = `/api/video/${filename}`;
-      section.classList.remove('hidden');
-      player.load();
-      player.play().catch(e => console.log('Autoplay handled'));
-      section.scrollIntoView({ behavior: 'smooth' });
-    }
-
-    function closePlayer() {
-      const player = document.getElementById('mainVideoPlayer');
-      player.pause();
-      document.getElementById('playerSection').classList.add('hidden');
-    }
-
-    function setSpeed(speed) {
-      const player = document.getElementById('mainVideoPlayer');
-      player.playbackRate = speed;
-      document.querySelectorAll('.speed-btn').forEach(btn => {
-        if (parseFloat(btn.innerText) === speed) {
-          btn.className = 'speed-btn px-2.5 py-1 text-xs rounded bg-indigo-600 text-white font-bold';
-        } else {
-          btn.className = 'speed-btn px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-300 hover:bg-slate-700';
-        }
+        grid.appendChild(panel);
       });
     }
 
-    async function deleteRecording(filename) {
-      if (!confirm(`Are you sure you want to delete ${filename}?`)) return;
+    // ----------------- LIVE CLOCK & UPDATE LOOPS -----------------
+
+    function updateDigitalClocks() {
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString();
+      CAM_NAMES.forEach((_, idx) => {
+        const el = document.getElementById(`clock_${idx}`);
+        if (el) el.innerText = timeStr;
+      });
+    }
+    setInterval(updateDigitalClocks, 1000);
+
+    // Refresh live feeds seamlessly
+    async function refreshLiveFeeds() {
+      CAM_NAMES.forEach((camName, idx) => {
+        const state = camStates[camName];
+        if (state.mode === "live") {
+          const imgEl = document.getElementById(`img_${idx}`);
+          if (imgEl) {
+            // Preload image off-screen to avoid flicker
+            const tempImg = new Image();
+            const newUrl = `/api/live/${encodeURIComponent(camName)}?t=${Date.now()}`;
+            tempImg.src = newUrl;
+            tempImg.onload = () => {
+              if (state.mode === "live") {
+                imgEl.src = newUrl;
+                state.lastLiveUrl = newUrl;
+              }
+            };
+          }
+        }
+      });
+    }
+    setInterval(refreshLiveFeeds, 3500);
+
+    // Refresh system status from server
+    async function refreshStatus() {
       try {
-        const res = await fetch(`/api/recordings/${filename}`, { method: 'DELETE' });
-        if (res.ok) {
-          loadRecordings();
-          updateStatus();
+        const res = await fetch('/api/status');
+        if (!res.ok) {
+          if (res.status === 401) window.location.reload();
+          return;
+        }
+        const data = await res.json();
+        
+        document.getElementById('serverIpBadge').innerText = `${data.server_ip}:${data.server_port}`;
+        document.getElementById('onlineCountText').innerText = `${data.total_online} Online`;
+
+        data.computers.forEach((pc, idx) => {
+          const badge = document.getElementById(`badge_status_${idx}`);
+          const recDot = document.getElementById(`osd_rec_${idx}`);
+          if (badge) {
+            if (pc.is_online) {
+              badge.className = "text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30";
+              badge.innerText = `ONLINE (${pc.ip})`;
+              if (recDot) recDot.className = "w-2 h-2 rounded-full bg-red-500 pulse-rec";
+            } else {
+              badge.className = "text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-500";
+              badge.innerText = "OFFLINE";
+              if (recDot) recDot.className = "w-2 h-2 rounded-full bg-slate-600";
+            }
+          }
+        });
+      } catch (e) {
+        console.error("Status error:", e);
+      }
+    }
+    setInterval(refreshStatus, 4000);
+
+    // ----------------- CCTV DVR HISTORY & SCRUBBER -----------------
+
+    async function setCamMode(camName, mode) {
+      const idx = CAM_NAMES.indexOf(camName);
+      const state = camStates[camName];
+      state.mode = mode;
+
+      const btnLive = document.getElementById(`btn_live_${idx}`);
+      const btnHist = document.getElementById(`btn_hist_${idx}`);
+      const histControls = document.getElementById(`hist_controls_${idx}`);
+      const scrubber = document.getElementById(`scrubber_container_${idx}`);
+      const osdFrame = document.getElementById(`osd_frame_info_${idx}`);
+
+      if (mode === "live") {
+        btnLive.className = "px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white shadow transition flex items-center gap-1";
+        btnHist.className = "px-2.5 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-800 transition flex items-center gap-1";
+        histControls.classList.add("hidden");
+        scrubber.classList.add("hidden");
+        osdFrame.innerText = "LIVE FEED";
+        
+        // Stop any autoplay
+        if (state.isPlaying) togglePlayHistory(camName);
+        
+        // Restore live image
+        document.getElementById(`img_${idx}`).src = state.lastLiveUrl;
+      } else {
+        btnHist.className = "px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-600 text-white shadow transition flex items-center gap-1";
+        btnLive.className = "px-2.5 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-800 transition flex items-center gap-1";
+        histControls.classList.remove("hidden");
+        scrubber.classList.remove("hidden");
+
+        // Load 5-minute screenshots
+        await loadCamScreenshots(camName);
+      }
+    }
+
+    async function loadCamScreenshots(camName) {
+      const idx = CAM_NAMES.indexOf(camName);
+      const state = camStates[camName];
+      const slider = document.getElementById(`slider_${idx}`);
+      const sliderLabel = document.getElementById(`slider_label_${idx}`);
+
+      try {
+        const res = await fetch(`/api/screenshots?computer=${encodeURIComponent(camName)}`);
+        const data = await res.json();
+        state.screenshots = data.screenshots || [];
+
+        if (state.screenshots.length > 0) {
+          slider.max = state.screenshots.length - 1;
+          slider.value = state.screenshots.length - 1; // Start at latest
+          state.historyIndex = state.screenshots.length - 1;
+          showHistoryFrame(camName, state.historyIndex);
+        } else {
+          slider.max = 0;
+          slider.value = 0;
+          sliderLabel.innerText = "No snapshots";
+          document.getElementById(`osd_frame_info_${idx}`).innerText = "NO RECORDINGS (24h)";
         }
       } catch (e) {
-        alert('Failed to delete file');
+        console.error("Error loading screenshots:", e);
       }
+    }
+
+    function showHistoryFrame(camName, frameIndex) {
+      const idx = CAM_NAMES.indexOf(camName);
+      const state = camStates[camName];
+      if (!state.screenshots || state.screenshots.length === 0) return;
+
+      const item = state.screenshots[frameIndex];
+      if (!item) return;
+
+      const imgEl = document.getElementById(`img_${idx}`);
+      imgEl.src = item.url;
+
+      const slider = document.getElementById(`slider_${idx}`);
+      const sliderLabel = document.getElementById(`slider_label_${idx}`);
+      const osdFrame = document.getElementById(`osd_frame_info_${idx}`);
+
+      slider.value = frameIndex;
+      sliderLabel.innerText = `${item.time_label} (${frameIndex + 1}/${state.screenshots.length})`;
+      osdFrame.innerText = `PLAYBACK: ${item.created_at}`;
+    }
+
+    function onScrubberSlide(camName, value) {
+      const state = camStates[camName];
+      state.historyIndex = parseInt(value, 10);
+      showHistoryFrame(camName, state.historyIndex);
+    }
+
+    function stepHistory(camName, delta) {
+      const state = camStates[camName];
+      if (!state.screenshots || state.screenshots.length === 0) return;
+      let nextIdx = state.historyIndex + delta;
+      if (nextIdx < 0) nextIdx = 0;
+      if (nextIdx >= state.screenshots.length) nextIdx = state.screenshots.length - 1;
+      state.historyIndex = nextIdx;
+      showHistoryFrame(camName, nextIdx);
+    }
+
+    function togglePlayHistory(camName) {
+      const idx = CAM_NAMES.indexOf(camName);
+      const state = camStates[camName];
+      const playBtn = document.getElementById(`btn_play_${idx}`);
+
+      if (state.isPlaying) {
+        clearInterval(autoPlayTimers[camName]);
+        state.isPlaying = false;
+        playBtn.innerHTML = '<i class="fa-solid fa-play text-[10px]"></i> Play';
+        playBtn.className = "px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded transition flex items-center gap-1";
+      } else {
+        if (!state.screenshots || state.screenshots.length === 0) return;
+        state.isPlaying = true;
+        playBtn.innerHTML = '<i class="fa-solid fa-pause text-[10px]"></i> Pause';
+        playBtn.className = "px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded transition flex items-center gap-1";
+
+        autoPlayTimers[camName] = setInterval(() => {
+          if (state.historyIndex >= state.screenshots.length - 1) {
+            state.historyIndex = 0; // Loop around
+          } else {
+            state.historyIndex += 1;
+          }
+          showHistoryFrame(camName, state.historyIndex);
+        }, 600); // 1.6 frames per second smooth reel
+      }
+    }
+
+    function downloadCurrentSnapshot(camName) {
+      const idx = CAM_NAMES.indexOf(camName);
+      const state = camStates[camName];
+      let url = "";
+      let filename = `${camName}_snapshot.jpg`;
+
+      if (state.mode === "live") {
+        url = `/api/live/${encodeURIComponent(camName)}`;
+      } else if (state.screenshots && state.screenshots[state.historyIndex]) {
+        url = state.screenshots[state.historyIndex].url;
+        filename = state.screenshots[state.historyIndex].filename;
+      }
+
+      if (url) {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+    }
+
+    // ----------------- VIEW MODES (QUAD vs SINGLE CAM) -----------------
+
+    function setViewMode(mode) {
+      currentViewMode = mode;
+      
+      const btnQuad = document.getElementById("btnViewQuad");
+      const btnCams = [
+        document.getElementById("btnViewCam1"),
+        document.getElementById("btnViewCam2"),
+        document.getElementById("btnViewCam3"),
+        document.getElementById("btnViewCam4")
+      ];
+
+      btnQuad.className = "px-3 py-1.5 rounded-lg font-semibold text-slate-400 hover:text-white hover:bg-slate-800/60 transition";
+      btnCams.forEach(b => b.className = "px-2.5 py-1.5 rounded-lg font-medium text-slate-400 hover:text-white hover:bg-slate-800/60 transition");
+
+      if (mode === "quad") {
+        btnQuad.className = "px-3 py-1.5 rounded-lg font-semibold bg-indigo-600 text-white shadow transition flex items-center gap-1.5";
+        CAM_NAMES.forEach(camName => {
+          const panel = document.getElementById(`panel_${camName.replace(' ', '_')}`);
+          if (panel) panel.classList.remove("hidden");
+        });
+        const grid = document.getElementById("cctvGrid");
+        grid.className = "grid grid-cols-1 lg:grid-cols-2 gap-4";
+      } else {
+        const activeIdx = CAM_NAMES.indexOf(mode);
+        if (btnCams[activeIdx]) {
+          btnCams[activeIdx].className = "px-2.5 py-1.5 rounded-lg font-semibold bg-indigo-600 text-white shadow transition";
+        }
+        CAM_NAMES.forEach(camName => {
+          const panel = document.getElementById(`panel_${camName.replace(' ', '_')}`);
+          if (panel) {
+            if (camName.toLowerCase() === mode.toLowerCase()) {
+              panel.classList.remove("hidden");
+            } else {
+              panel.classList.add("hidden");
+            }
+          }
+        });
+        const grid = document.getElementById("cctvGrid");
+        grid.className = "grid grid-cols-1 gap-4 max-w-5xl mx-auto";
+      }
+    }
+
+    // ----------------- FULLSCREEN VIEWER -----------------
+
+    function toggleFullscreen(camName) {
+      const idx = CAM_NAMES.indexOf(camName);
+      const state = camStates[camName];
+      const modal = document.getElementById("fullscreenModal");
+      const modalImg = document.getElementById("modalImg");
+      const title = document.getElementById("modalCamTitle");
+      const status = document.getElementById("modalCamStatus");
+
+      title.innerText = `CH 0${idx + 1} // ${camName.toUpperCase()}`;
+      if (state.mode === "live") {
+        modalImg.src = `/api/live/${encodeURIComponent(camName)}?t=${Date.now()}`;
+        status.innerText = "LIVE STREAM";
+      } else if (state.screenshots && state.screenshots[state.historyIndex]) {
+        modalImg.src = state.screenshots[state.historyIndex].url;
+        status.innerText = `PLAYBACK: ${state.screenshots[state.historyIndex].created_at}`;
+      }
+
+      modal.classList.remove("hidden");
+    }
+
+    function closeFullscreen() {
+      document.getElementById("fullscreenModal").classList.add("hidden");
     }
 
     async function logout() {
@@ -1070,25 +1341,26 @@ def get_dashboard_html():
       window.location.reload();
     }
 
-    updateStatus();
-    loadRecordings();
-    setInterval(updateStatus, 5000);
-    setInterval(loadRecordings, 10000);
+    // Boot
+    window.addEventListener("DOMContentLoaded", () => {
+      initCCTVGrid();
+      refreshStatus();
+      updateDigitalClocks();
+    });
   </script>
 </body>
 </html>"""
 
 if __name__ == "__main__":
-    cfg = load_config()
-    host = cfg.get("server_host", "0.0.0.0")
-    port = cfg.get("server_port", 8899)
     lan_ip = get_lan_ip()
+    port = config.get("server_port", 8899)
     print("=" * 60)
-    print("  ALBAYAN LAB STUDY MONITOR - 4 COMPUTERS SERVER")
+    print("  ALBAYAN CCTV LAB MONITOR - 4 CAMERAS SERVER")
     print("=" * 60)
-    print(f" Web Dashboard:     http://localhost:{port}")
+    print(f" Web CCTV Monitor:  http://localhost:{port}")
     print(f" Lab Network (LAN): http://{lan_ip}:{port}")
-    print(" Master Password:   albayan@2026")
-    print(" Video Chunks:      2 Minutes (10 FPS with faststart)")
+    print(f" Master Password:   albayan@2026")
+    print(f" Capture Mode:      5-Min Screenshots (CCTV Timeline Reel)")
+    print(f" Live Feed:         CCTV Quad Screen (every 3-5 seconds)")
     print("=" * 60)
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

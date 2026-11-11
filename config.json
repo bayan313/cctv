@@ -10,8 +10,8 @@
   ],
   "send_videos_to_telegram": false,
   "retention_hours": 24,
-  "fps": 10,
-  "chunk_minutes": 2,
+  "screenshot_interval_seconds": 300,
+  "live_stream_interval_seconds": 5,
   "registered_devices": {
     "963359608738": "albayan 1"
   }

@@ -1,9 +1,13 @@
 # Recordings and temporary files
 recordings/
+server/recordings/
 client/temp_records/
 *.mp4
 *.mkv
 *.avi
+*.jpg
+*.jpeg
+*.png
 
 # Python cache
 __pycache__/

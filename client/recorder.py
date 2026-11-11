@@ -1,11 +1,13 @@
+# -*- coding: utf-8 -*-
 import os
 import sys
+import io
 import time
 import json
 import uuid
 import socket
+import ctypes
 import threading
-import queue
 import subprocess
 from pathlib import Path
 from datetime import datetime
@@ -17,9 +19,9 @@ except Exception:
     pass
 
 import requests
-import numpy as np
+from PIL import ImageGrab, Image
 import mss
-import imageio
+import numpy as np
 
 # Directories
 CLIENT_DIR = Path(__file__).resolve().parent
@@ -28,6 +30,21 @@ CONFIG_PATH = CLIENT_DIR / "client_config.json"
 GLOBAL_CONFIG_PATH = BASE_DIR / "config.json"
 TEMP_DIR = CLIENT_DIR / "temp_records"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+DEFAULT_PC_NAMES = ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]
+
+def normalize_pc_name(name: str) -> str:
+    clean = name.strip()
+    c_up = clean.upper()
+    if c_up in ["PC-01", "PC-1", "PC1"]:
+        return "albayan 1"
+    if c_up in ["PC-02", "PC-2", "PC2"]:
+        return "albayan 2"
+    if c_up in ["PC-03", "PC-3", "PC3"]:
+        return "albayan 3"
+    if c_up in ["PC-04", "PC-4", "PC4"]:
+        return "albayan 4"
+    return clean
 
 def get_machine_id():
     try:
@@ -69,26 +86,28 @@ def auto_register_pc():
         )
         if res.status_code == 200:
             data = res.json()
+            raw_name = data.get("computer_name", "albayan 1")
+            clean_name = normalize_pc_name(raw_name)
             cfg = {
-                "computer_name": data.get("computer_name", "albayan 1"),
+                "computer_name": clean_name,
                 "server_url": srv_url,
                 "api_secret": data.get("api_secret", "secure_study_monitor_secret_key_8899"),
-                "fps": data.get("fps", 10),
-                "chunk_minutes": data.get("chunk_minutes", 2)
+                "screenshot_interval_seconds": 300,
+                "live_stream_interval_seconds": 5
             }
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(cfg, f, indent=2)
             print(f"[Register] Auto-assigned Computer Name: {cfg['computer_name']}")
             return cfg
     except Exception as e:
-        print(f"[Register] Could not connect to server for auto-registration: {e}")
+        print(f"[Register] Server connect error, using local default: {e}")
 
     return {
         "computer_name": "albayan 1",
         "server_url": srv_url,
         "api_secret": "secure_study_monitor_secret_key_8899",
-        "fps": 10,
-        "chunk_minutes": 2
+        "screenshot_interval_seconds": 300,
+        "live_stream_interval_seconds": 5
     }
 
 def load_config():
@@ -97,22 +116,65 @@ def load_config():
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
                 if cfg.get("computer_name"):
+                    cfg["computer_name"] = normalize_pc_name(cfg["computer_name"])
                     return cfg
         except Exception:
             pass
     return auto_register_pc()
 
 CONFIG = load_config()
-COMPUTER_NAME = CONFIG.get("computer_name", "albayan 1").strip()
+COMPUTER_NAME = normalize_pc_name(CONFIG.get("computer_name", "albayan 1"))
 SERVER_URL = CONFIG.get("server_url", "http://127.0.0.1:8899").rstrip("/")
 API_SECRET = CONFIG.get("api_secret", "secure_study_monitor_secret_key_8899")
-FPS = CONFIG.get("fps", 10)
-# 2-Minute Video Chunks (120 seconds) for fast web viewing
-CHUNK_SECONDS = CONFIG.get("chunk_minutes", 2) * 60
+SCREENSHOT_INTERVAL = int(CONFIG.get("screenshot_interval_seconds", 300)) # 5 minutes
+LIVE_INTERVAL = int(CONFIG.get("live_stream_interval_seconds", 5)) # 5 seconds
 
-upload_queue = queue.Queue()
+# ----------------- 1. RELIABLE NON-BLACK SCREEN CAPTURE -----------------
 
-# ----------------- 1. POPUP NOTIFICATION -----------------
+def capture_desktop_image():
+    """
+    Captures Windows desktop screen reliably.
+    Attaches thread to interactive desktop session to ensure NO BLACK SCREEN.
+    """
+    try:
+        user32 = ctypes.windll.user32
+        desk = user32.OpenInputDesktop(0, False, 0x01FF)
+        if desk:
+            user32.SetThreadDesktop(desk)
+    except Exception:
+        pass
+
+    # Method 1: Pillow ImageGrab
+    try:
+        img = ImageGrab.grab(all_screens=True)
+        if img:
+            arr = np.array(img)
+            if arr.mean() > 1.0:
+                return img
+    except Exception:
+        pass
+
+    # Method 2: mss fallback
+    try:
+        with mss.MSS() as sct:
+            mon = sct.monitors[1]
+            shot = sct.grab(mon)
+            img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+            arr = np.array(img)
+            if arr.mean() > 1.0:
+                return img
+    except Exception:
+        pass
+
+    # Method 3: Return last attempt even if dark (e.g. user has black wallpaper)
+    try:
+        return ImageGrab.grab(all_screens=True)
+    except Exception:
+        pass
+
+    return None
+
+# ----------------- 2. POPUP NOTIFICATION (OVERT) -----------------
 
 def show_recording_popup():
     try:
@@ -124,7 +186,7 @@ def show_recording_popup():
         root.overrideredirect(True)
 
         screen_width = root.winfo_screenwidth()
-        w = 520
+        w = 540
         h = 140
         x = (screen_width - w) // 2
         y = 35
@@ -136,7 +198,7 @@ def show_recording_popup():
 
         header_lbl = tk.Label(
             frame,
-            text=f"⚠️  [{COMPUTER_NAME.upper()}] SCREEN RECORDING ACTIVE",
+            text=f"⚠️  [{COMPUTER_NAME.upper()}] CCTV MONITORING ACTIVE",
             font=("Segoe UI", 12, "bold"),
             fg="#f87171",
             bg="#1e293b"
@@ -145,7 +207,7 @@ def show_recording_popup():
 
         msg_lbl = tk.Label(
             frame,
-            text=f"This computer ({COMPUTER_NAME}) is under screen recording for study monitoring.\nസ്ക്രീൻ റെക്കോർഡിംഗ് ആരംഭിച്ചിരിക്കുന്നു.",
+            text=f"This computer ({COMPUTER_NAME}) is under screen monitoring.\nസ്ക്രീൻ റെക്കോർഡിംഗ് ആരംഭിച്ചിരിക്കുന്നു (5-min snapshots active).",
             font=("Segoe UI", 10),
             fg="#cbd5e1",
             bg="#1e293b",
@@ -158,25 +220,74 @@ def show_recording_popup():
     except Exception as e:
         print(f"[Popup] Notice: {e}")
 
-# ----------------- 2. SAFE AUTO-UPDATER -----------------
+# ----------------- 3. LIVE CCTV STREAMER (EVERY 5 SECONDS) -----------------
 
-def auto_updater_worker():
-    time.sleep(30)
+def live_cctv_worker():
+    """Sends a fast live thumbnail frame every 5 seconds to power the CCTV quad monitor."""
+    print(f"[{COMPUTER_NAME}] Live CCTV streamer started (every {LIVE_INTERVAL}s)...")
     while True:
         try:
-            subprocess.run(["git", "fetch", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, timeout=20)
-            res = subprocess.run(["git", "status", "-uno"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10)
-            if "Your branch is behind" in res.stdout:
-                print(f"[{COMPUTER_NAME}] Safe Auto-Update: New code detected on GitHub. Pulling...")
-                subprocess.run(["git", "pull", "--no-rebase", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=30)
-                print(f"[{COMPUTER_NAME}] Updated successfully. Restarting recorder...")
-                python = sys.executable
-                os.execl(python, python, *sys.argv)
+            img = capture_desktop_image()
+            if img:
+                # Resize to 960x540 for lightweight live streaming
+                thumb = img.copy()
+                thumb.thumbnail((960, 540))
+                buf = io.BytesIO()
+                thumb.save(buf, format="JPEG", quality=65)
+                buf.seek(0)
+
+                files = {"frame": (f"{COMPUTER_NAME}.jpg", buf, "image/jpeg")}
+                data = {"computer_name": COMPUTER_NAME}
+                headers = {"X-API-Secret": API_SECRET}
+                requests.post(
+                    f"{SERVER_URL}/api/client/live_frame",
+                    files=files,
+                    data=data,
+                    headers=headers,
+                    timeout=5
+                )
         except Exception:
             pass
-        time.sleep(1800)
+        time.sleep(LIVE_INTERVAL)
 
-# ----------------- 3. UPLOADER & PING THREAD -----------------
+# ----------------- 4. 5-MINUTE SCREENSHOT RECORDER -----------------
+
+def five_minute_screenshot_worker():
+    """Captures and uploads a high-resolution screenshot every 5 minutes."""
+    print(f"[{COMPUTER_NAME}] 5-minute screenshot scheduler active...")
+    while True:
+        try:
+            img = capture_desktop_image()
+            if img:
+                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"[{COMPUTER_NAME}]_{timestamp_str}.jpg"
+                
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=80)
+                buf.seek(0)
+
+                files = {"screenshot": (filename, buf, "image/jpeg")}
+                data = {
+                    "computer_name": COMPUTER_NAME,
+                    "timestamp": timestamp_str
+                }
+                headers = {"X-API-Secret": API_SECRET}
+
+                res = requests.post(
+                    f"{SERVER_URL}/api/client/upload_screenshot",
+                    files=files,
+                    data=data,
+                    headers=headers,
+                    timeout=15
+                )
+                if res.status_code == 200:
+                    print(f"[{COMPUTER_NAME}] Saved 5-minute screenshot: {filename}")
+        except Exception as e:
+            print(f"[{COMPUTER_NAME}] Error taking 5-min screenshot: {e}")
+
+        time.sleep(SCREENSHOT_INTERVAL)
+
+# ----------------- 5. PING WORKER -----------------
 
 def ping_worker():
     while True:
@@ -189,145 +300,51 @@ def ping_worker():
             )
         except Exception:
             pass
-        time.sleep(25)
+        time.sleep(20)
 
-def upload_worker():
+# ----------------- 6. SAFE AUTO-UPDATER -----------------
+
+def auto_updater_worker():
+    time.sleep(30)
     while True:
-        file_path = upload_queue.get()
-        if not file_path:
-            break
-        
-        path_obj = Path(file_path)
-        if not path_obj.exists():
-            upload_queue.task_done()
-            continue
-
-        uploaded = False
-        retry_delay = 3
-        while not uploaded:
-            try:
-                with open(path_obj, "rb") as f:
-                    files = {"video": (path_obj.name, f, "video/mp4")}
-                    data = {"computer_name": COMPUTER_NAME}
-                    headers = {"X-API-Secret": API_SECRET}
-                    res = requests.post(
-                        f"{SERVER_URL}/api/client/upload",
-                        files=files,
-                        data=data,
-                        headers=headers,
-                        timeout=90
-                    )
-                    if res.status_code == 200:
-                        uploaded = True
-                        print(f"[Uploader] Successfully uploaded {path_obj.name} to server!")
-                        try:
-                            path_obj.unlink()
-                        except Exception:
-                            pass
-            except Exception as e:
-                time.sleep(retry_delay)
-                retry_delay = min(60, retry_delay * 2)
-
-        upload_queue.task_done()
-
-# ----------------- 4. SCREEN RECORDER -----------------
-
-def record_screen():
-    print(f"[{COMPUTER_NAME}] Screen recorder active at {FPS} FPS (2-minute clips)...")
-    
-    # Enqueue any pending files from previous sessions
-    for prev_file in TEMP_DIR.glob("*.mp4"):
-        upload_queue.put(str(prev_file))
-
-    with mss.MSS() as sct:
-        mon = sct.monitors[1]
-        width = mon["width"]
-        height = mon["height"]
-
-        # Ensure dimensions are divisible by 2 for H.264
-        width = width if width % 2 == 0 else width - 1
-        height = height if height % 2 == 0 else height - 1
-        capture_box = {"top": mon["top"], "left": mon["left"], "width": width, "height": height}
-
-        target_frame_time = 1.0 / FPS
-        fallback_frame = np.zeros((height, width, 3), dtype=np.uint8)
-
-        while True:
-            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            video_filename = f"[{COMPUTER_NAME}]_{timestamp_str}.mp4"
-            current_video_path = TEMP_DIR / video_filename
-
-            try:
-                # Faststart flag ensures MP4 index is at front for instant browser playback
-                writer = imageio.get_writer(
-                    str(current_video_path),
-                    fps=FPS,
-                    codec="libx264",
-                    quality=6,
-                    pixelformat="yuv420p",
-                    output_params=["-movflags", "+faststart"]
-                )
-            except Exception as err:
-                print(f"[Recorder] Writer error: {err}")
-                time.sleep(3)
-                continue
-
-            chunk_start_time = time.time()
-            chunk_end_time = chunk_start_time + CHUNK_SECONDS
-            frame_count = 0
-
-            while time.time() < chunk_end_time:
-                loop_start = time.time()
-                try:
-                    raw_frame = np.array(sct.grab(capture_box))
-                    rgb_frame = raw_frame[:, :, [2, 1, 0]]
-                    writer.append_data(rgb_frame)
-                    frame_count += 1
-                except Exception:
-                    # If screen is locked or inactive, supply standby frame so video stream never drops
-                    try:
-                        writer.append_data(fallback_frame)
-                        frame_count += 1
-                    except Exception:
-                        pass
-
-                elapsed = time.time() - loop_start
-                sleep_time = target_frame_time - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-
-            try:
-                writer.close()
-                file_size = current_video_path.stat().st_size if current_video_path.exists() else 0
-                file_size_mb = round(file_size / (1024 * 1024), 2)
-                print(f"[Recorder] 2-min chunk ready: {video_filename} ({frame_count} frames, {file_size_mb} MB)")
-                
-                if current_video_path.exists() and file_size > 1000:
-                    upload_queue.put(str(current_video_path))
-                else:
-                    if current_video_path.exists():
-                        current_video_path.unlink()
-            except Exception as e:
-                print(f"[Recorder] Error finalizing chunk: {e}")
+        try:
+            subprocess.run(["git", "fetch", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, timeout=20)
+            res = subprocess.run(["git", "status", "-uno"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10)
+            if "Your branch is behind" in res.stdout:
+                print(f"[{COMPUTER_NAME}] Safe Auto-Update: Pulling latest features from GitHub...")
+                subprocess.run(["git", "pull", "--no-rebase", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=30)
+                print(f"[{COMPUTER_NAME}] Updated successfully. Restarting...")
+                python = sys.executable
+                os.execl(python, python, *sys.argv)
+        except Exception:
+            pass
+        time.sleep(1800)
 
 # ----------------- MAIN FLOW -----------------
 
 if __name__ == "__main__":
-    print(f"[{COMPUTER_NAME}] Albayan Study Monitor. Initializing (10s delay)...")
+    print(f"=================================================")
+    print(f"  ALBAYAN CCTV MONITOR CLIENT - [{COMPUTER_NAME}]")
+    print(f"  Interval: Screenshot every 5 minutes")
+    print(f"  Display: CCTV Quad Live Feed")
+    print(f"=================================================")
+    print(f"Initializing (10s startup delay)...")
     time.sleep(10)
 
     # Show warning popup
     show_recording_popup()
 
-    # Start workers
-    t_updater = threading.Thread(target=auto_updater_worker, daemon=True)
-    t_updater.start()
+    # Thread 1: Live CCTV frame stream (every 5 seconds)
+    t_live = threading.Thread(target=live_cctv_worker, daemon=True)
+    t_live.start()
 
+    # Thread 2: Ping heartbeat (every 20 seconds)
     t_ping = threading.Thread(target=ping_worker, daemon=True)
     t_ping.start()
 
-    t_upload = threading.Thread(target=upload_worker, daemon=True)
-    t_upload.start()
+    # Thread 3: Safe GitHub Auto-Updater
+    t_updater = threading.Thread(target=auto_updater_worker, daemon=True)
+    t_updater.start()
 
-    # Continuous recording
-    record_screen()
+    # Thread 4 (Main thread): 5-minute screenshot recorder
+    five_minute_screenshot_worker()
