@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import sys
 import io
@@ -36,6 +37,19 @@ RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_PC_NAMES = ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]
+
+def normalize_pc_name(name: str) -> str:
+    clean = name.strip()
+    c_up = clean.upper()
+    if c_up in ["PC-01", "PC-1", "PC1"]:
+        return "albayan 1"
+    if c_up in ["PC-02", "PC-2", "PC2"]:
+        return "albayan 2"
+    if c_up in ["PC-03", "PC-3", "PC3"]:
+        return "albayan 3"
+    if c_up in ["PC-04", "PC-4", "PC4"]:
+        return "albayan 4"
+    return clean
 
 def get_lan_ip():
     try:
@@ -108,10 +122,9 @@ def send_telegram_video(video_path: Path, caption: str):
         except Exception:
             pass
 
-# ----------------- AUTO UPDATER (SAFE) -----------------
+# ----------------- AUTO UPDATER -----------------
 
 async def auto_updater_task():
-    """Checks GitHub for updates every 30 minutes and applies them safely."""
     await asyncio.sleep(15)
     print("[AutoUpdater] Safe GitHub update checker active.")
     while True:
@@ -194,19 +207,17 @@ async def telegram_bot_poller():
                     
                     elif cmd == "/status":
                         now = time.time()
-                        if not active_computers:
-                            send_telegram_message("🖥️ *Lab Computers Status:*\nNo computers active right now.")
-                        else:
-                            lines = ["🖥️ *Albayan Computers Status:*"]
-                            for pc_name, data in sorted(active_computers.items()):
-                                is_online = (now - data.get("last_ping", 0)) < 60
-                                if is_online:
-                                    status_icon = "🟢 *Online (Recording)*"
-                                else:
-                                    ago = int((now - data.get("last_ping", 0)) / 60)
-                                    status_icon = f"🔴 *Offline* ({ago}m ago)"
-                                lines.append(f"• *{pc_name}:* {status_icon} (IP: `{data.get('ip', 'N/A')}`)")
-                            send_telegram_message("\n".join(lines))
+                        lines = ["🖥️ *Albayan Computers Status (4 PCs):*"]
+                        for pc_name in DEFAULT_PC_NAMES:
+                            data = active_computers.get(pc_name, {})
+                            is_online = (now - data.get("last_ping", 0)) < 60
+                            if is_online:
+                                status_icon = "🟢 *Online (Recording 2-min clips)*"
+                            else:
+                                ago = int((now - data.get("last_ping", 0)) / 60) if "last_ping" in data else None
+                                status_icon = f"🔴 *Offline* ({ago}m ago)" if ago else "🔴 *Offline / Ready*"
+                            lines.append(f"• *{pc_name}:* {status_icon}")
+                        send_telegram_message("\n".join(lines))
 
                     elif cmd in ["/hidevideos", "/mutevideos"]:
                         cfg["send_videos_to_telegram"] = False
@@ -287,7 +298,6 @@ async def startup_event():
 
 @app.post("/api/client/register")
 def register_client(request: Request, payload: dict):
-    """Automatically assigns 'albayan 1', 'albayan 2', etc. based on device hardware ID."""
     cfg = load_config()
     client_ip = request.client.host if request.client else "unknown"
     device_id = payload.get("device_id", client_ip).strip()
@@ -319,14 +329,13 @@ def register_client(request: Request, payload: dict):
         "server_url": f"http://{lan_ip}:{port}",
         "api_secret": cfg.get("api_secret", "secure_study_monitor_secret_key_8899"),
         "fps": cfg.get("fps", 10),
-        "chunk_minutes": cfg.get("chunk_minutes", 5)
+        "chunk_minutes": cfg.get("chunk_minutes", 2)
     }
 
-# ----------------- WEB DOWNLOAD & INSTALL ENDPOINTS -----------------
+# ----------------- DOWNLOAD ENDPOINTS -----------------
 
 @app.get("/api/download/recorder.py")
 def download_recorder_py():
-    """Serves the latest client recorder script."""
     rec_file = CLIENT_DIR / "recorder.py"
     if rec_file.exists():
         return FileResponse(rec_file, media_type="text/x-python", filename="recorder.py")
@@ -334,10 +343,8 @@ def download_recorder_py():
 
 @app.get("/api/download/setup-script")
 def download_setup_script(request: Request, session: str = Depends(verify_session)):
-    """Generates an intelligent 1-click batch script that installs the software on this PC."""
     lan_ip = get_lan_ip()
     port = load_config().get("server_port", 8899)
-    # If accessed from custom host header, use that
     host_header = request.headers.get("host")
     server_base = f"http://{host_header}" if host_header else f"http://{lan_ip}:{port}"
 
@@ -370,7 +377,7 @@ echo [4/4] Setting up Windows Auto-Startup...
 set STARTUP_DIR=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup
 set VBS_FILE=%STARTUP_DIR%\\StudyMonitorLauncher.vbs
 echo Set WshShell = CreateObject("WScript.Shell") > "%VBS_FILE%"
-echo WshShell.Run ""pythonw "" ^& ""%TARGET_DIR%\client\recorder.py"" , 0, False >> "%VBS_FILE%"
+echo WshShell.Run ""pythonw "" ^& ""%TARGET_DIR%\\client\\recorder.py"" , 0, False >> "%VBS_FILE%"
 
 echo.
 echo Starting Screen Monitor in Background...
@@ -392,7 +399,6 @@ pause
 
 @app.get("/api/download/client-zip")
 def download_client_zip(session: str = Depends(verify_session)):
-    """Serves a complete standalone zip package."""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         rec_path = CLIENT_DIR / "recorder.py"
@@ -452,14 +458,11 @@ def get_system_status(session: str = Depends(verify_session)):
     chat_ids = cfg.get("telegram_chat_ids", [])
     now = time.time()
     
+    # Strictly return the 4 Albayan Computers - no duplicates!
     computers_list = []
     online_count = 0
-    all_names = list(DEFAULT_PC_NAMES)
-    for name in active_computers:
-        if name not in all_names:
-            all_names.append(name)
 
-    for pc_name in all_names:
+    for pc_name in DEFAULT_PC_NAMES:
         data = active_computers.get(pc_name, {})
         is_online = (now - data.get("last_ping", 0)) < 60
         if is_online:
@@ -467,7 +470,7 @@ def get_system_status(session: str = Depends(verify_session)):
         computers_list.append({
             "name": pc_name,
             "is_online": is_online,
-            "ip": data.get("ip", "Not connected"),
+            "ip": data.get("ip", "Offline / Ready"),
             "last_seen_seconds": int(now - data.get("last_ping", 0)) if "last_ping" in data else None
         })
 
@@ -499,12 +502,18 @@ def list_recordings(
     
     for f in files:
         name = f.name
-        pc_name = "albayan"
+        raw_name = "albayan 1"
         if name.startswith("[") and "]" in name:
-            pc_name = name[1:name.find("]")]
+            raw_name = name[1:name.find("]")]
+        
+        pc_name = normalize_pc_name(raw_name)
 
-        if computer and computer != "all" and pc_name.lower() != computer.lower():
-            continue
+        if computer and computer != "all":
+            # Compare whitespace/case-insensitively
+            target = computer.replace(" ", "").lower()
+            item_pc = pc_name.replace(" ", "").lower()
+            if target != item_pc:
+                continue
 
         mtime = f.stat().st_mtime
         size_mb = round(f.stat().st_size / (1024 * 1024), 2)
@@ -520,11 +529,7 @@ def list_recordings(
             "hours_remaining": hours_remaining
         })
 
-    all_pcs = sorted(list(set(
-        (f.name[1:f.name.find("]")]) for f in files if f.name.startswith("[") and "]" in f.name
-    )))
-
-    return {"recordings": results, "all_computers": all_pcs if all_pcs else DEFAULT_PC_NAMES}
+    return {"recordings": results, "all_computers": DEFAULT_PC_NAMES}
 
 @app.delete("/api/recordings/{filename}")
 def delete_recording(filename: str, session: str = Depends(verify_session)):
@@ -595,7 +600,8 @@ def client_ping(
         raise HTTPException(status_code=403, detail="Forbidden")
 
     client_ip = request.client.host if request.client else "unknown"
-    pc_name = payload.get("computer_name", "albayan 1").strip()
+    raw_name = payload.get("computer_name", "albayan 1")
+    pc_name = normalize_pc_name(raw_name)
 
     now = time.time()
     is_new = pc_name not in active_computers or (now - active_computers[pc_name]["last_ping"]) > 180
@@ -618,7 +624,7 @@ async def client_upload(
     if x_api_secret != cfg.get("api_secret"):
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    pc_name = computer_name.strip()
+    pc_name = normalize_pc_name(computer_name)
     client_ip = request.client.host if request.client else "unknown"
     active_computers[pc_name] = {"last_ping": time.time(), "ip": client_ip}
 
@@ -628,7 +634,7 @@ async def client_upload(
             f.write(chunk)
 
     file_size_mb = round(dest_path.stat().st_size / (1024 * 1024), 2)
-    print(f"[Upload] [{pc_name}] Received video: {dest_path.name} ({file_size_mb} MB)")
+    print(f"[Upload] [{pc_name}] Received 2-minute video: {dest_path.name} ({file_size_mb} MB)")
 
     if cfg.get("send_videos_to_telegram", False):
         caption = f"📹 *[{pc_name}] Screen Recording*\nFile: `{dest_path.name}`\nSize: {file_size_mb} MB"
@@ -747,7 +753,7 @@ def get_dashboard_html():
   </header>
 
   <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-    <!-- [INSTALL] WEB DOWNLOAD & INSTALL BANNER (AFTER PASSWORD) -->
+    <!-- ⚡ WEB DOWNLOAD & INSTALL BANNER -->
     <div class="bg-gradient-to-r from-indigo-950/80 via-slate-900 to-indigo-950/80 border border-indigo-500/40 rounded-2xl p-6 mb-8 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl">
       <div class="flex items-center gap-4">
         <div class="w-14 h-14 bg-gradient-to-tr from-indigo-600 to-cyan-500 rounded-2xl flex items-center justify-center text-white text-2xl shadow-lg shadow-indigo-600/30 shrink-0">
@@ -773,7 +779,7 @@ def get_dashboard_html():
       </div>
     </div>
 
-    <!-- Lab Computers Status Cards (albayan 1, 2, 3, 4) -->
+    <!-- Lab Computers Status Cards (albayan 1, 2, 3, 4) - NO DUPLICATES -->
     <div class="mb-8">
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-sm uppercase font-semibold text-slate-400 tracking-wider">
@@ -797,7 +803,7 @@ def get_dashboard_html():
           <i class="fa-solid fa-film text-cyan-400 text-lg"></i>
         </div>
         <p id="statTotalClips" class="text-2xl font-bold text-white mt-2">0</p>
-        <p class="text-xs text-slate-500 mt-1" id="statTotalSize">0 MB stored</p>
+        <p class="text-xs text-slate-500 mt-1" id="statTotalSize">0 MB stored (2-min clips)</p>
       </div>
 
       <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
@@ -824,7 +830,7 @@ def get_dashboard_html():
           <a href="https://t.me/my_library_data_bot" target="_blank" class="text-sky-300 hover:underline">
             @my_library_data_bot <i class="fa-solid fa-arrow-up-right-from-square text-[10px]"></i>
           </a>
-          <span class="text-slate-500">Auto-update enabled</span>
+          <span class="text-slate-500">2-min chunk active</span>
         </div>
       </div>
     </div>
@@ -844,7 +850,7 @@ def get_dashboard_html():
         </button>
       </div>
       <div class="bg-black rounded-xl overflow-hidden aspect-video max-h-[550px] flex items-center justify-center">
-        <video id="mainVideoPlayer" controls class="w-full h-full" preload="metadata">
+        <video id="mainVideoPlayer" controls autoplay class="w-full h-full" preload="auto">
           Your browser does not support HTML5 video.
         </video>
       </div>
@@ -869,13 +875,17 @@ def get_dashboard_html():
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h2 class="text-lg font-bold text-white tracking-tight">Screen Recordings (Last 24 Hours)</h2>
-          <p class="text-xs text-slate-400 mt-1">Recorded at 10 FPS. Older clips automatically deleted.</p>
+          <p class="text-xs text-slate-400 mt-1">Recorded at 10 FPS in 2-minute clips. Plays smoothly in browser.</p>
         </div>
         
         <div class="flex items-center gap-3">
           <label class="text-xs text-slate-400 font-semibold uppercase">Filter PC:</label>
           <select id="pcFilterSelect" onchange="loadRecordings()" class="bg-slate-800 border border-slate-700 text-white rounded-lg px-3 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none">
             <option value="all">All Computers</option>
+            <option value="albayan 1">albayan 1</option>
+            <option value="albayan 2">albayan 2</option>
+            <option value="albayan 3">albayan 3</option>
+            <option value="albayan 4">albayan 4</option>
           </select>
 
           <button onclick="loadRecordings()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition flex items-center gap-1.5">
@@ -892,7 +902,7 @@ def get_dashboard_html():
         </div>
         <h3 class="text-base font-semibold text-slate-300">No Recordings Found</h3>
         <p class="text-xs text-slate-500 max-w-sm mx-auto mt-1">
-          When students use the lab computers, recorded video clips will appear here automatically.
+          Each computer uploads a 2-minute video clip as soon as it completes. Please wait a moment if the PC just started!
         </p>
       </div>
     </div>
@@ -963,17 +973,6 @@ def get_dashboard_html():
         if (res.status === 401) { window.location.reload(); return; }
         const data = await res.json();
         
-        const sel = document.getElementById('pcFilterSelect');
-        const currentSelected = sel.value;
-        const pcs = data.all_computers || ['albayan 1', 'albayan 2', 'albayan 3', 'albayan 4'];
-        
-        let selectHtml = '<option value="all">All Computers</option>';
-        pcs.forEach(pc => {
-          const isSel = (pc.toLowerCase() === currentSelected.toLowerCase()) ? 'selected' : '';
-          selectHtml += `<option value="${pc}" ${isSel}>${pc}</option>`;
-        });
-        sel.innerHTML = selectHtml;
-
         const grid = document.getElementById('videoGrid');
         const empty = document.getElementById('emptyState');
 
@@ -993,7 +992,7 @@ def get_dashboard_html():
                 <i class="fa-solid fa-play text-2xl text-indigo-400 group-hover:scale-110 transition"></i>
                 <button onclick="playVideo('${rec.filename}', '${rec.computer}', '${rec.created_at}')" class="absolute inset-0 w-full h-full focus:outline-none"></button>
                 <span class="absolute top-2 left-2 bg-indigo-600/80 px-2 py-0.5 rounded text-[11px] text-white font-mono font-bold">${rec.computer}</span>
-                <span class="absolute bottom-2 right-2 bg-black/70 px-2 py-0.5 rounded text-[11px] text-slate-300 font-mono">10 FPS</span>
+                <span class="absolute bottom-2 right-2 bg-black/70 px-2 py-0.5 rounded text-[11px] text-slate-300 font-mono">2 Min (10 FPS)</span>
               </div>
               <h4 class="text-sm font-semibold text-white tracking-tight truncate">${rec.filename}</h4>
               <p class="text-xs text-slate-400 mt-1"><i class="fa-regular fa-clock mr-1"></i> ${rec.created_at}</p>
@@ -1030,7 +1029,8 @@ def get_dashboard_html():
       player.src = `/api/video/${filename}`;
       dl.href = `/api/video/${filename}`;
       section.classList.remove('hidden');
-      player.play();
+      player.load();
+      player.play().catch(e => console.log('Autoplay handled'));
       section.scrollIntoView({ behavior: 'smooth' });
     }
 
@@ -1073,7 +1073,7 @@ def get_dashboard_html():
     updateStatus();
     loadRecordings();
     setInterval(updateStatus, 5000);
-    setInterval(loadRecordings, 15000);
+    setInterval(loadRecordings, 10000);
   </script>
 </body>
 </html>"""
@@ -1089,6 +1089,6 @@ if __name__ == "__main__":
     print(f" Web Dashboard:     http://localhost:{port}")
     print(f" Lab Network (LAN): http://{lan_ip}:{port}")
     print(" Master Password:   albayan@2026")
-    print(" Web Install:       Available on dashboard")
+    print(" Video Chunks:      2 Minutes (10 FPS with faststart)")
     print("=" * 60)
     uvicorn.run(app, host=host, port=port)
