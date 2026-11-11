@@ -4,7 +4,9 @@
   "admin_password": "Study@Safe2026",
   "api_secret": "secure_study_monitor_secret_key_8899",
   "telegram_bot_token": "9287027030:AAFeB2BZyF9G87R6ulycSzFFY9yIuqepIFQ",
-  "telegram_chat_ids": [],
+  "telegram_chat_ids": [
+    8003387798
+  ],
   "send_videos_to_telegram": false,
   "retention_hours": 24,
   "fps": 10,
