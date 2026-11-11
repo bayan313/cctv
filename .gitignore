@@ -1,0 +1,18 @@
+# Recordings and temporary files
+recordings/
+client/temp_records/
+*.mp4
+*.mkv
+*.avi
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local machine specific client configs
+client/client_config.json
+
+# Environment/system files
+.env
+.DS_Store
+Thumbs.db
