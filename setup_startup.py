@@ -42,26 +42,29 @@ except Exception as e:
     print(f"❌ [Registry Error] {e}")
 
 # 2. Update Windows Startup Folder (Dual redundancy)
-appdata = os.environ.get("APPDATA")
-if appdata:
-    startup = pathlib.Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-    startup.mkdir(parents=True, exist_ok=True)
-    
-    server_vbs = startup / "StudyMonitorServer.vbs"
-    client_vbs = startup / "StudyMonitorClient.vbs"
+try:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        startup = pathlib.Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+        startup.mkdir(parents=True, exist_ok=True)
+        
+        server_vbs = startup / "StudyMonitorServer.vbs"
+        client_vbs = startup / "StudyMonitorClient.vbs"
 
-    # Clean escape sequences for VBS
-    s_script = f'Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.CurrentDirectory = "{BASE_DIR}"\r\nWshShell.Run """{pythonw_exe}"" ""{SERVER_PY}""", 0, False\r\n'
-    if CLIENT_EXE.exists():
-        c_script = f'Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run """{CLIENT_EXE}""", 0, False\r\n'
-    else:
-        c_script = f'Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.CurrentDirectory = "{BASE_DIR}"\r\nWshShell.Run """{pythonw_exe}"" ""{CLIENT_PY}""", 0, False\r\n'
+        # Clean escape sequences for VBS
+        s_script = f'Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.CurrentDirectory = "{BASE_DIR}"\r\nWshShell.Run """{pythonw_exe}"" ""{SERVER_PY}""", 0, False\r\n'
+        if CLIENT_EXE.exists():
+            c_script = f'Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run """{CLIENT_EXE}""", 0, False\r\n'
+        else:
+            c_script = f'Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.CurrentDirectory = "{BASE_DIR}"\r\nWshShell.Run """{pythonw_exe}"" ""{CLIENT_PY}""", 0, False\r\n'
 
-    server_vbs.write_text(s_script, encoding="utf-8")
-    client_vbs.write_text(c_script, encoding="utf-8")
+        server_vbs.write_text(s_script, encoding="utf-8")
+        client_vbs.write_text(c_script, encoding="utf-8")
 
-    print("✅ [Startup Folder] Successfully updated VBS scripts:")
-    print("   -", server_vbs)
-    print("   -", client_vbs)
+        print("✅ [Startup Folder] Successfully updated VBS scripts:")
+        print("   -", server_vbs)
+        print("   -", client_vbs)
+except Exception as e:
+    print(f"ℹ️ [Startup Folder Notice] Registry HKCU Run active: {e}")
 
 print("\n🎉 [SUCCESS] Computer will now start the monitoring tool automatically when turned ON!")
