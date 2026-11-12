@@ -39,15 +39,35 @@ def verify_session(session_token: Optional[str] = Depends(cookie_scheme)):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return session_token
 
+@app.middleware("http")
+async def vercel_path_normalizer(request: Request, call_next):
+    path = request.scope.get("path", "")
+    for prefix in ["/api/index.py", "/api/index"]:
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            break
+    if not path:
+        path = "/"
+    request.scope["path"] = path
+    return await call_next(request)
+
 # ----------------- ROUTES -----------------
 
 @app.get("/", response_class=HTMLResponse)
+@app.get("/api", response_class=HTMLResponse)
+@app.get("/api/", response_class=HTMLResponse)
+@app.get("/api/index.py", response_class=HTMLResponse)
+@app.get("/index.html", response_class=HTMLResponse)
+@app.get("/login", response_class=HTMLResponse)
+@app.get("/dashboard", response_class=HTMLResponse)
+@app.get("/cctv", response_class=HTMLResponse)
 def index_page(request: Request, session_token: Optional[str] = Depends(cookie_scheme)):
     if not session_token or session_token not in active_sessions:
         return get_login_html()
     return get_cctv_dashboard_html()
 
 @app.post("/api/login")
+@app.post("/login")
 def login(payload: dict, response: Response):
     password = payload.get("password")
     if password == ADMIN_PASSWORD:
@@ -64,6 +84,7 @@ def login(payload: dict, response: Response):
     raise HTTPException(status_code=401, detail="Invalid password")
 
 @app.post("/api/logout")
+@app.post("/logout")
 def logout(response: Response, session_token: Optional[str] = Depends(cookie_scheme)):
     if session_token in active_sessions:
         active_sessions.remove(session_token)
@@ -218,3 +239,14 @@ def get_cctv_dashboard_html():
   </div>
 </body>
 </html>"""
+
+@app.exception_handler(404)
+async def custom_404_handler(request: Request, exc):
+    path = request.url.path
+    # Return JSON error only for real API calls that failed
+    if path.startswith("/api/") and not any(path.startswith(p) for p in ["/api/login", "/api/logout", "/api/download"]):
+        return JSONResponse(status_code=404, content={"detail": f"Route {path} not found"})
+    token = request.cookies.get("session_token")
+    if token and token in active_sessions:
+        return HTMLResponse(get_cctv_dashboard_html())
+    return HTMLResponse(get_login_html())
