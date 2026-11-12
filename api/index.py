@@ -662,12 +662,29 @@ if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
 if not exist "%TARGET_DIR%\\client" mkdir "%TARGET_DIR%\\client"
 if not exist "%TARGET_DIR%\\client\\temp_records" mkdir "%TARGET_DIR%\\client\\temp_records"
 
-echo [1/3] Downloading latest software from Real Web Portal...
+echo [1/3] Checking if Python is installed on this PC...
+where python >nul 2>nul
+if %errorlevel% neq 0 (
+    echo [!] Python is NOT installed on this PC.
+    echo [!] Downloading Standalone Monitor App (No Python Required)...
+    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{base_url}/api/download/AlbayanMonitor.exe', '%TARGET_DIR%\\AlbayanMonitor.exe')"
+    
+    echo.
+    echo [2/3] Setting up Windows Auto-Startup (HKCU Run)...
+    reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "\"%TARGET_DIR%\\AlbayanMonitor.exe\"" /f >nul
+    
+    echo.
+    echo [3/3] Launching Standalone Screen Monitor in Background...
+    start "" "%TARGET_DIR%\\AlbayanMonitor.exe"
+    goto finish
+)
+
+echo [1/3] Python found! Downloading latest software from Real Web Portal...
 powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{base_url}/api/download/recorder.py', '%TARGET_DIR%\\client\\recorder.py')"
 
 echo.
 echo [2/3] Installing lightweight dependencies...
-python -m pip install mss requests truststore pillow numpy --quiet
+python -m pip install mss requests truststore pillow numpy imageio imageio-ffmpeg --quiet
 
 echo.
 echo [3/3] Setting up Windows Auto-Startup (HKCU Run)...
@@ -677,10 +694,12 @@ echo.
 echo Starting Screen Monitor in Background...
 start "" pythonw "%TARGET_DIR%\\client\\recorder.py"
 
+:finish
 echo.
 echo ========================================================
 echo   [SUCCESS] SETUP COMPLETE! PC IS TRANSMITTING TO CCTV!
 echo ========================================================
+echo.
 pause
 """
     return Response(
@@ -688,6 +707,30 @@ pause
         media_type="application/bat",
         headers={"Content-Disposition": "attachment; filename=albayan_setup.bat"}
     )
+
+@app.get("/api/download/AlbayanMonitor.exe")
+def download_albayan_monitor_exe(request: Request = None):
+    upstream = get_upstream_url(request)
+    if upstream:
+        from fastapi.responses import RedirectResponse
+        try:
+            return RedirectResponse(url=f"{upstream}/api/download/AlbayanMonitor.exe")
+        except Exception:
+            pass
+
+    cand_paths = [
+        ROOT_DIR / "dist" / "AlbayanMonitor.exe",
+        ROOT_DIR.parent / "dist" / "AlbayanMonitor.exe",
+        ROOT_DIR / "client" / "AlbayanMonitor.exe"
+    ]
+    for p in cand_paths:
+        if p.exists():
+            return FileResponse(
+                p,
+                media_type="application/vnd.microsoft.portable-executable",
+                filename="AlbayanMonitor.exe"
+            )
+    raise HTTPException(status_code=404, detail="AlbayanMonitor.exe not found on cloud node")
 
 @app.get("/api/download/recorder.py")
 def download_recorder_py():

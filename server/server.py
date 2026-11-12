@@ -615,7 +615,7 @@ def download_setup_script(request: Request, session: str = Depends(verify_sessio
 
     script_content = f"""@echo off
 setlocal
-title Albayan CCTV Study Monitor - Auto Installer
+title Albayan CCTV Study Monitor - Universal Auto Installer
 echo ========================================================
 echo   ALBAYAN LAB MONITOR - 1-CLICK CLIENT INSTALLER
 echo ========================================================
@@ -626,12 +626,29 @@ if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
 if not exist "%TARGET_DIR%\\client" mkdir "%TARGET_DIR%\\client"
 if not exist "%TARGET_DIR%\\client\\temp_records" mkdir "%TARGET_DIR%\\client\\temp_records"
 
-echo [1/4] Downloading latest CCTV client from server...
+echo [1/3] Checking if Python is installed on this PC...
+where python >nul 2>nul
+if %errorlevel% neq 0 (
+    echo [!] Python is NOT installed on this PC.
+    echo [!] Downloading Standalone Monitor App (No Python Required)...
+    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{server_base}/api/download/AlbayanMonitor.exe', '%TARGET_DIR%\\AlbayanMonitor.exe')"
+    
+    echo.
+    echo [2/3] Setting up Windows Auto-Startup (HKCU Run)...
+    reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "\"%TARGET_DIR%\\AlbayanMonitor.exe\"" /f >nul
+    
+    echo.
+    echo [3/3] Launching Standalone Screen Monitor in Background...
+    start "" "%TARGET_DIR%\\AlbayanMonitor.exe"
+    goto finish
+)
+
+echo [1/4] Python found! Downloading latest CCTV client from server...
 powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{server_base}/api/download/recorder.py', '%TARGET_DIR%\\client\\recorder.py')"
 
 echo.
-echo [2/4] Verifying Python and installing dependencies...
-python -m pip install mss requests truststore pillow numpy --quiet
+echo [2/4] Verifying dependencies...
+python -m pip install mss requests truststore pillow numpy imageio imageio-ffmpeg --quiet
 
 echo.
 echo [3/4] Registering PC name (albayan 1, 2, 3, or 4)...
@@ -642,9 +659,10 @@ echo [4/4] Setting up Windows Auto-Startup (HKCU Run)...
 reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "pythonw \"%TARGET_DIR%\\client\\recorder.py\"" /f >nul
 
 echo.
-echo Starting Screen Monitor in Background...
+echo Launching Screen Monitor in Background...
 start "" pythonw "%TARGET_DIR%\\client\\recorder.py"
 
+:finish
 echo.
 echo ========================================================
 echo   [SUCCESS] INSTALLED SUCCESSFULLY!
@@ -658,6 +676,23 @@ pause
         media_type="application/bat",
         headers={"Content-Disposition": "attachment; filename=albayan_cctv_setup.bat"}
     )
+
+@app.get("/api/download/AlbayanMonitor.exe")
+def download_albayan_monitor_exe():
+    cand_paths = [
+        BASE_DIR / "dist" / "AlbayanMonitor.exe",
+        BASE_DIR.parent / "dist" / "AlbayanMonitor.exe",
+        RECORDINGS_DIR.parent / "dist" / "AlbayanMonitor.exe",
+        RECORDINGS_DIR.parent / "client" / "AlbayanMonitor.exe"
+    ]
+    for p in cand_paths:
+        if p.exists():
+            return FileResponse(
+                p,
+                media_type="application/vnd.microsoft.portable-executable",
+                filename="AlbayanMonitor.exe"
+            )
+    raise HTTPException(status_code=404, detail="AlbayanMonitor.exe build in progress or not found")
 
 @app.get("/api/download/client-zip")
 def download_client_zip(session: str = Depends(verify_session)):
@@ -1275,6 +1310,11 @@ def get_cctv_dashboard_html():
         <a href="/api/download/setup-script" download="albayan_setup.bat" class="hidden sm:flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow-md transition">
           <i class="fa-solid fa-cloud-arrow-down"></i>
           <span>1-Click PC Installer</span>
+        </a>
+
+        <a href="/api/download/AlbayanMonitor.exe" download="AlbayanMonitor.exe" class="hidden sm:flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow-md transition" title="Standalone EXE - No Python needed">
+          <i class="fa-solid fa-file-arrow-down"></i>
+          <span>Standalone App (.exe)</span>
         </a>
 
         <div class="hidden md:flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/30 text-xs">

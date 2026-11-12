@@ -21,6 +21,9 @@ server/.sessions.json
 # Setup scripts
 cloudflared.exe
 *.exe
+dist/
+build/
+*.spec
 
 # Environment/system files
 .env

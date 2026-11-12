@@ -26,7 +26,11 @@ import numpy as np
 import imageio
 
 # Directories
-CLIENT_DIR = Path(__file__).resolve().parent
+if getattr(sys, 'frozen', False):
+    CLIENT_DIR = Path(sys.executable).resolve().parent
+else:
+    CLIENT_DIR = Path(__file__).resolve().parent
+
 BASE_DIR = CLIENT_DIR.parent
 CONFIG_PATH = CLIENT_DIR / "client_config.json"
 GLOBAL_CONFIG_PATH = BASE_DIR / "config.json"
@@ -218,6 +222,70 @@ def capture_desktop_image():
 
 # ----------------- 2. POPUP NOTIFICATION (OVERT CENTER TYPEWRITER) -----------------
 
+def run_popup_ui():
+    """Isolated popup UI function that runs in a standalone child process."""
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+        root.title("Screen Recording Active")
+        root.attributes("-topmost", True)
+        root.overrideredirect(True)
+
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        w, h = 560, 160
+        x = max(0, (screen_w - w) // 2)
+        y = max(0, (screen_h - h) // 2)
+        root.geometry(f"{w}x{h}+{x}+{y}")
+        root.configure(bg="#020617")
+
+        frame = tk.Frame(root, bg="#0f172a", highlightbackground="#ef4444", highlightthickness=2.5, padx=24, pady=20)
+        frame.pack(fill="both", expand=True)
+
+        header_lbl = tk.Label(
+            frame,
+            text=f"[{COMPUTER_NAME.upper()}] CCTV MONITOR ACTIVE",
+            font=("Segoe UI", 9, "bold"),
+            fg="#94a3b8",
+            bg="#0f172a"
+        )
+        header_lbl.pack(anchor="center", pady=(0, 4))
+
+        type_lbl = tk.Label(
+            frame,
+            text="",
+            font=("Consolas", 18, "bold"),
+            fg="#ef4444",
+            bg="#0f172a"
+        )
+        type_lbl.pack(anchor="center", pady=(0, 6))
+
+        sub_lbl = tk.Label(
+            frame,
+            text="This computer is under screen monitoring. Recording in progress.",
+            font=("Segoe UI", 9),
+            fg="#64748b",
+            bg="#0f172a"
+        )
+        sub_lbl.pack(anchor="center")
+
+        full_text = "● SCREEN RECORDING STARTED"
+        state = {"idx": 0}
+
+        def type_step():
+            if state["idx"] < len(full_text):
+                state["idx"] += 1
+                type_lbl.config(text=full_text[:state["idx"]])
+                root.after(45, type_step)
+            else:
+                root.after(3000, root.destroy)
+
+        root.after(150, type_step)
+        root.mainloop()
+    except Exception:
+        pass
+    sys.exit(0)
+
 def show_recording_popup():
     """
     Displays an overt centered notification when PC powers on / starts up:
@@ -225,74 +293,11 @@ def show_recording_popup():
     pauses for a few seconds, then automatically closes and continues running in the background.
     Runs in an isolated child subprocess to guarantee 100% thread safety and eliminate Tkinter Tcl crashes.
     """
-    code = f'''
-import sys
-import tkinter as tk
-
-try:
-    root = tk.Tk()
-    root.title("Screen Recording Active")
-    root.attributes("-topmost", True)
-    root.overrideredirect(True)
-
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
-    w, h = 560, 160
-    x = max(0, (screen_w - w) // 2)
-    y = max(0, (screen_h - h) // 2)
-    root.geometry(f"{{w}}x{{h}}+{{x}}+{{y}}")
-    root.configure(bg="#020617")
-
-    frame = tk.Frame(root, bg="#0f172a", highlightbackground="#ef4444", highlightthickness=2.5, padx=24, pady=20)
-    frame.pack(fill="both", expand=True)
-
-    header_lbl = tk.Label(
-        frame,
-        text="[{COMPUTER_NAME.upper()}] CCTV MONITOR ACTIVE",
-        font=("Segoe UI", 9, "bold"),
-        fg="#94a3b8",
-        bg="#0f172a"
-    )
-    header_lbl.pack(anchor="center", pady=(0, 4))
-
-    type_lbl = tk.Label(
-        frame,
-        text="",
-        font=("Consolas", 18, "bold"),
-        fg="#ef4444",
-        bg="#0f172a"
-    )
-    type_lbl.pack(anchor="center", pady=(0, 6))
-
-    sub_lbl = tk.Label(
-        frame,
-        text="This computer is under screen monitoring. Recording in progress.",
-        font=("Segoe UI", 9),
-        fg="#64748b",
-        bg="#0f172a"
-    )
-    sub_lbl.pack(anchor="center")
-
-    full_text = "● SCREEN RECORDING STARTED"
-    current_idx = 0
-
-    def type_step():
-        global current_idx
-        if current_idx < len(full_text):
-            current_idx += 1
-            type_lbl.config(text=full_text[:current_idx])
-            root.after(45, type_step)
-        else:
-            root.after(3000, root.destroy)
-
-    root.after(150, type_step)
-    root.mainloop()
-except Exception:
-    pass
-sys.exit(0)
-'''
     try:
-        subprocess.run([sys.executable, "-c", code], timeout=15)
+        if getattr(sys, 'frozen', False):
+            subprocess.run([sys.executable, "--popup"], timeout=15)
+        else:
+            subprocess.run([sys.executable, str(Path(__file__).resolve()), "--popup"], timeout=15)
     except Exception as e:
         print(f"[Popup] Isolated popup finished: {e}")
 
@@ -396,6 +401,8 @@ def ping_worker():
 # ----------------- 6. SAFE AUTO-UPDATER -----------------
 
 def auto_updater_worker():
+    if getattr(sys, 'frozen', False):
+        return
     time.sleep(30)
     while True:
         try:
@@ -579,9 +586,32 @@ def video_recorder_worker():
         except Exception as e:
             print(f"[{COMPUTER_NAME}] Error closing video writer: {e}")
 
+def ensure_windows_startup():
+    """Ensure client automatically launches on PC boot without user interaction."""
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+        if getattr(sys, 'frozen', False):
+            cmd = f'"{sys.executable}"'
+        else:
+            pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+            if not Path(pythonw).exists():
+                pythonw = sys.executable
+            cmd = f'"{pythonw}" "{Path(__file__).resolve()}"'
+        winreg.SetValueEx(key, "AlbayanStudyMonitorClient", 0, winreg.REG_SZ, cmd)
+        winreg.CloseKey(key)
+        print(f"[{COMPUTER_NAME}] Windows Startup registered: {cmd}")
+    except Exception as e:
+        print(f"[{COMPUTER_NAME}] Startup register error: {e}")
+
 # ----------------- MAIN FLOW -----------------
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--popup":
+        run_popup_ui()
+
     print(f"=================================================")
     print(f"  ALBAYAN CCTV MONITOR CLIENT - [{COMPUTER_NAME}]")
     print(f"  Mode: Automatic Video Recording + CCTV Feed")
@@ -590,6 +620,9 @@ if __name__ == "__main__":
     print(f"=================================================")
     print(f"Initializing (2s startup delay)...")
     time.sleep(2)
+
+    # Automatically ensure Windows Auto-Startup on first run
+    ensure_windows_startup()
 
     # Show warning popup
     show_recording_popup()
