@@ -213,29 +213,83 @@ def get_login_html():
 </html>"""
 
 def get_cctv_dashboard_html():
-    try:
-        from server.server import get_cctv_dashboard_html as get_html
-        return get_html()
-    except Exception:
-        # Fallback standalone dashboard for serverless environments
-        return """<!DOCTYPE html>
+    hub_url = LOCAL_SERVER_URL.strip() if LOCAL_SERVER_URL else "http://192.168.1.2:8899"
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Albayan CCTV Monitor - Cloud View</title>
+  <title>Albayan CCTV Monitor - Cloud Portal</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen p-6 flex flex-col items-center justify-center">
-  <div class="max-w-xl w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center shadow-2xl">
-    <div class="inline-flex p-3 bg-indigo-500/10 text-indigo-400 rounded-2xl mb-4 text-2xl font-bold">📡 Albayan CCTV Lab Cloud</div>
-    <h1 class="text-xl font-bold text-white mb-2">Central Local CCTV Monitor</h1>
-    <p class="text-slate-400 text-sm mb-6">Lab computers capture and stream directly to your local hub server at <strong class="text-indigo-400">{LOCAL_SERVER_URL}</strong></p>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-8 flex flex-col items-center justify-center">
+  <div class="max-w-2xl w-full bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-10 shadow-2xl space-y-6">
     
-    <div class="space-y-3">
-      <a href="{LOCAL_SERVER_URL}" class="block w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 px-4 rounded-xl transition text-sm">Open Local CCTV Dashboard</a>
-      <a href="/api/download/setup-script" download="albayan_setup.bat" class="block w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-3 px-4 rounded-xl transition text-sm">Download 1-Click Client Setup (.bat)</a>
+    <div class="text-center space-y-2">
+      <div class="inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 rounded-full text-xs font-semibold tracking-wider uppercase">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        Albayan CCTV Cloud Node Active
+      </div>
+      <h1 class="text-2xl md:text-3xl font-extrabold tracking-tight text-white">Albayan CCTV Lab Hub</h1>
+      <p class="text-slate-400 text-sm">4-Computer Real-Time Screen Monitoring & Review</p>
     </div>
+
+    <!-- Info Box: LAN vs Mobile -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="bg-slate-950/60 border border-slate-800 rounded-2xl p-5 space-y-3">
+        <div class="flex items-center gap-2 text-indigo-400 font-bold text-sm">
+          <i class="fa-solid fa-wifi text-lg"></i>
+          <span>Lab Wi-Fi / LAN Access</span>
+        </div>
+        <p class="text-xs text-slate-400 leading-relaxed">
+          When connected to the <strong>Lab Wi-Fi</strong>, open the central local hub for full 720p 4-camera live stream and 5-min timeline:
+        </p>
+        <a href="{hub_url}" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center gap-2 w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-xl transition text-sm shadow-lg shadow-indigo-600/20">
+          <i class="fa-solid fa-tv"></i>
+          <span>Open Live CCTV ({hub_url})</span>
+        </a>
+      </div>
+
+      <div class="bg-slate-950/60 border border-slate-800 rounded-2xl p-5 space-y-3">
+        <div class="flex items-center gap-2 text-sky-400 font-bold text-sm">
+          <i class="fa-brands fa-telegram text-lg"></i>
+          <span>Anywhere via Mobile Data</span>
+        </div>
+        <p class="text-xs text-slate-400 leading-relaxed">
+          Outside the lab on 4G/5G? Get instant live screen snapshots and alerts directly on your phone via Telegram:
+        </p>
+        <a href="https://t.me/my_library_data_bot" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center gap-2 w-full bg-sky-600 hover:bg-sky-500 text-white font-bold py-3 px-4 rounded-xl transition text-sm shadow-lg shadow-sky-600/20">
+          <i class="fa-solid fa-paper-plane"></i>
+          <span>Open @my_library_data_bot</span>
+        </a>
+      </div>
+    </div>
+
+    <!-- System Status Badges -->
+    <div class="bg-slate-950 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between text-xs gap-3">
+      <div class="flex items-center gap-2">
+        <span class="text-slate-400">Hub Server:</span>
+        <code class="bg-slate-800 px-2 py-1 rounded text-indigo-300 font-mono">{hub_url}</code>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-400">Passcode:</span>
+        <code class="bg-slate-800 px-2 py-1 rounded text-emerald-300 font-mono">albayan@2026</code>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-400">Monitored PCs:</span>
+        <span class="text-white font-medium">albayan 1, 2, 3, 4</span>
+      </div>
+    </div>
+
+    <!-- Installer Download -->
+    <div class="pt-2">
+      <a href="/api/download/setup-script" download="albayan_setup.bat" class="flex items-center justify-center gap-2 w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold py-3 px-4 rounded-xl transition text-sm">
+        <i class="fa-solid fa-download"></i>
+        <span>Download 1-Click Client Setup (.bat) for Lab PCs</span>
+      </a>
+    </div>
+
   </div>
 </body>
 </html>"""

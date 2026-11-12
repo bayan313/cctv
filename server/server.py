@@ -359,7 +359,11 @@ async def lifespan(app: FastAPI):
 
 # App Instance with Lifespan
 app = FastAPI(title="Albayan CCTV Lab Monitor Portal", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+if STATIC_DIR.exists():
+    try:
+        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    except Exception:
+        pass
 
 # ----------------- CLIENT AUTO REGISTRATION -----------------
 
