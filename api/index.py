@@ -94,7 +94,7 @@ python -m pip install mss requests truststore pillow numpy --quiet
 
 echo.
 echo [3/3] Setting up Windows Auto-Startup (HKCU Run)...
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "pythonw \"%TARGET_DIR%\\client\\recorder.py\"" /f >nul
+reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "pythonw \"%TARGET_DIR%\\client\\recorder.py\"" /f >nul
 
 echo.
 echo Starting Screen Monitor in Background...

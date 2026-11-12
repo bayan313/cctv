@@ -435,7 +435,7 @@ python -c "import urllib.request, json, uuid, os, pathlib; dev_id=str(uuid.getno
 
 echo.
 echo [4/4] Setting up Windows Auto-Startup (HKCU Run)...
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "pythonw \"%TARGET_DIR%\\client\\recorder.py\"" /f >nul
+reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "pythonw \"%TARGET_DIR%\\client\\recorder.py\"" /f >nul
 
 echo.
 echo Starting Screen Monitor in Background...
