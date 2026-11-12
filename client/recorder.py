@@ -217,81 +217,78 @@ def show_recording_popup():
     Displays an overt centered notification when PC powers on / starts up:
     Types out: "● SCREEN RECORDING STARTED" in the exact CENTER of the screen,
     pauses for a few seconds, then automatically closes and continues running in the background.
+    Runs in an isolated child subprocess to guarantee 100% thread safety and eliminate Tkinter Tcl crashes.
     """
+    code = f'''
+import sys
+import tkinter as tk
+
+try:
+    root = tk.Tk()
+    root.title("Screen Recording Active")
+    root.attributes("-topmost", True)
+    root.overrideredirect(True)
+
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    w, h = 560, 160
+    x = max(0, (screen_w - w) // 2)
+    y = max(0, (screen_h - h) // 2)
+    root.geometry(f"{{w}}x{{h}}+{{x}}+{{y}}")
+    root.configure(bg="#020617")
+
+    frame = tk.Frame(root, bg="#0f172a", highlightbackground="#ef4444", highlightthickness=2.5, padx=24, pady=20)
+    frame.pack(fill="both", expand=True)
+
+    header_lbl = tk.Label(
+        frame,
+        text="[{COMPUTER_NAME.upper()}] CCTV MONITOR ACTIVE",
+        font=("Segoe UI", 9, "bold"),
+        fg="#94a3b8",
+        bg="#0f172a"
+    )
+    header_lbl.pack(anchor="center", pady=(0, 4))
+
+    type_lbl = tk.Label(
+        frame,
+        text="",
+        font=("Consolas", 18, "bold"),
+        fg="#ef4444",
+        bg="#0f172a"
+    )
+    type_lbl.pack(anchor="center", pady=(0, 6))
+
+    sub_lbl = tk.Label(
+        frame,
+        text="This computer is under screen monitoring. Recording in progress.",
+        font=("Segoe UI", 9),
+        fg="#64748b",
+        bg="#0f172a"
+    )
+    sub_lbl.pack(anchor="center")
+
+    full_text = "● SCREEN RECORDING STARTED"
+    current_idx = 0
+
+    def type_step():
+        global current_idx
+        if current_idx < len(full_text):
+            current_idx += 1
+            type_lbl.config(text=full_text[:current_idx])
+            root.after(45, type_step)
+        else:
+            root.after(3000, root.destroy)
+
+    root.after(150, type_step)
+    root.mainloop()
+except Exception:
+    pass
+sys.exit(0)
+'''
     try:
-        import tkinter as tk
-
-        root = tk.Tk()
-        root.title("Screen Recording Active")
-        root.attributes("-topmost", True)
-        root.overrideredirect(True)
-
-        screen_w = root.winfo_screenwidth()
-        screen_h = root.winfo_screenheight()
-        w, h = 560, 160
-        x = max(0, (screen_w - w) // 2)
-        y = max(0, (screen_h - h) // 2)
-        root.geometry(f"{w}x{h}+{x}+{y}")
-        root.configure(bg="#020617")
-
-        frame = tk.Frame(root, bg="#0f172a", highlightbackground="#ef4444", highlightthickness=2.5, padx=24, pady=20)
-        frame.pack(fill="both", expand=True)
-
-        header_lbl = tk.Label(
-            frame,
-            text=f"[{COMPUTER_NAME.upper()}] CCTV MONITOR ACTIVE",
-            font=("Segoe UI", 9, "bold"),
-            fg="#94a3b8",
-            bg="#0f172a"
-        )
-        header_lbl.pack(anchor="center", pady=(0, 4))
-
-        # Centered text that types out
-        type_lbl = tk.Label(
-            frame,
-            text="",
-            font=("Consolas", 18, "bold"),
-            fg="#ef4444",
-            bg="#0f172a"
-        )
-        type_lbl.pack(anchor="center", pady=(0, 6))
-
-        sub_lbl = tk.Label(
-            frame,
-            text="This computer is under screen monitoring. Recording in progress.",
-            font=("Segoe UI", 9),
-            fg="#64748b",
-            bg="#0f172a"
-        )
-        sub_lbl.pack(anchor="center")
-
-        full_text = "● SCREEN RECORDING STARTED"
-        current_idx = 0
-
-        def close_window():
-            try:
-                root.quit()
-            except Exception:
-                pass
-            try:
-                root.destroy()
-            except Exception:
-                pass
-
-        def type_step():
-            nonlocal current_idx
-            if current_idx < len(full_text):
-                current_idx += 1
-                type_lbl.config(text=full_text[:current_idx])
-                root.after(45, type_step)
-            else:
-                # Keep visible for 3 seconds then close cleanly and continue background recording
-                root.after(3000, close_window)
-
-        root.after(150, type_step)
-        root.mainloop()
+        subprocess.run([sys.executable, "-c", code], timeout=15)
     except Exception as e:
-        print(f"[Popup] Notice: {e}")
+        print(f"[Popup] Isolated popup finished: {e}")
 
 # ----------------- 3. LIVE CCTV STREAMER (EVERY 5 SECONDS) -----------------
 
