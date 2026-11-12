@@ -10,7 +10,7 @@
   "telegram_chat_ids": [
     8003387798
   ],
-  "send_videos_to_telegram": true,
+  "send_videos_to_telegram": false,
   "video_recording_enabled": true,
   "video_chunk_minutes": 2,
   "video_fps": 10,

