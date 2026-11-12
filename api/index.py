@@ -31,7 +31,7 @@ cookie_scheme = APIKeyCookie(name="session_token", auto_error=False)
 active_sessions = set()
 
 # Configuration
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "albayan@2026")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "974621467097458841599745404128")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9287027030:AAFeB2BZyF9G87R6ulycSzFFY9yIuqepIFQ")
 TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "8003387798"))
 API_SECRET = os.getenv("API_SECRET", "secure_study_monitor_secret_key_8899")
@@ -202,7 +202,7 @@ def get_html_login():
     <form id="loginForm" class="space-y-4">
       <div>
         <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Master Passcode</label>
-        <input type="password" id="password" placeholder="Enter albayan@2026" required
+        <input type="password" id="password" placeholder="Enter 974621467097458841599745404128" required
           class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500 transition">
       </div>
       <div id="loginError" class="text-xs text-red-400 hidden text-center font-medium">Invalid passcode. Please try again.</div>
@@ -395,6 +395,94 @@ def get_screenshots(computer: str = "albayan 1", request: Request = None, sessio
         "total": 0,
         "screenshots": []
     }
+
+@app.get("/api/recordings")
+def get_recordings(
+    computer: Optional[str] = Query(None),
+    request: Request = None,
+    session: str = Depends(verify_session)
+):
+    upstream = get_upstream_url(request)
+    target = f"?computer={computer}" if computer else ""
+    if upstream:
+        try:
+            r = requests.get(f"{upstream}/api/recordings{target}", headers={"Cookie": f"session_token={session}"}, timeout=5)
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            pass
+
+    results = []
+    all_videos = list(TMP_RECORDINGS.glob("*.mp4"))
+    all_videos.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    target_pc = normalize_pc_name(computer) if computer and computer.lower() != "all" else None
+
+    from datetime import datetime
+    for f in all_videos:
+        name = f.name
+        pc_name = "unknown"
+        time_label = ""
+        date_label = ""
+        full_str = ""
+        try:
+            if name.startswith("[") and "]_" in name:
+                parts = name.split("]_")
+                pc_name = parts[0][1:].strip()
+                ts_part = parts[1].replace(".mp4", "")
+                dt = datetime.strptime(ts_part, "%Y%m%d_%H%M%S")
+                time_label = dt.strftime("%I:%M %p")
+                date_label = dt.strftime("%b %d, %Y")
+                full_str = dt.strftime("%Y-%m-%d %I:%M:%S %p")
+        except Exception:
+            pass
+
+        if not full_str:
+            mtime = f.stat().st_mtime
+            full_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %I:%M:%S %p")
+            time_label = datetime.fromtimestamp(mtime).strftime("%I:%M %p")
+            date_label = datetime.fromtimestamp(mtime).strftime("%b %d, %Y")
+
+        if target_pc and pc_name.lower() != target_pc.lower():
+            continue
+
+        results.append({
+            "filename": f.name,
+            "computer": pc_name,
+            "url": f"/api/video/{f.name}",
+            "time_label": time_label,
+            "date_label": date_label,
+            "created_at": full_str,
+            "timestamp": f.stat().st_mtime,
+            "size_mb": round(f.stat().st_size / (1024 * 1024), 2)
+        })
+
+    return {
+        "total": len(results),
+        "recordings": results
+    }
+
+@app.get("/api/video/{filename}")
+def serve_video(filename: str, request: Request = None):
+    upstream = get_upstream_url(request)
+    if upstream:
+        from fastapi.responses import RedirectResponse
+        try:
+            return RedirectResponse(url=f"{upstream}/api/video/{filename}")
+        except Exception:
+            pass
+
+    safe_name = Path(filename).name
+    path = TMP_RECORDINGS / safe_name
+    if path.exists() and path.suffix.lower() == ".mp4":
+        return FileResponse(
+            path,
+            media_type="video/mp4",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Disposition": f'inline; filename="{safe_name}"'
+            }
+        )
+    raise HTTPException(status_code=404, detail="Video not found")
 
 @app.get("/api/status")
 def get_system_status(request: Request, session: str = Depends(verify_session)):

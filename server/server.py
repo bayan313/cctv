@@ -129,7 +129,7 @@ def create_session_token() -> str:
     ts = str(int(time.time()))
     nonce = secrets.token_hex(8)
     cfg = load_config()
-    pw = cfg.get("admin_password", "albayan@2026")
+    pw = cfg.get("admin_password", "974621467097458841599745404128")
     msg = f"{ts}:{nonce}:{pw}"
     sig = hmac.new(SESSION_HMAC_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
     return f"{ts}.{nonce}.{sig}"
@@ -151,7 +151,7 @@ def is_valid_session_token(token: Optional[str]) -> bool:
     except ValueError:
         return False
     cfg = load_config()
-    pw = cfg.get("admin_password", "albayan@2026")
+    pw = cfg.get("admin_password", "974621467097458841599745404128")
     msg = f"{ts}:{nonce}:{pw}"
     expected_sig = hmac.new(SESSION_HMAC_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(sig, expected_sig)
@@ -400,9 +400,9 @@ async def telegram_bot_poller():
                         lan_ip = get_lan_ip()
                         port = cfg.get("server_port", 8899)
                         if pub_url:
-                            send_telegram_message(f"🌐 *Albayan CCTV Real Web Portal:*\n{pub_url}\n\nPassword: `albayan@2026`\n📱 Open from anywhere on mobile or PC!")
+                            send_telegram_message(f"🌐 *Albayan CCTV Real Web Portal:*\n{pub_url}\n\nPassword: `974621467097458841599745404128`\n📱 Open from anywhere on mobile or PC!")
                         else:
-                            send_telegram_message(f"🌐 *CCTV Web Dashboard:*\nhttp://{lan_ip}:{port}\nPassword: `albayan@2026`")
+                            send_telegram_message(f"🌐 *CCTV Web Dashboard:*\nhttp://{lan_ip}:{port}\nPassword: `974621467097458841599745404128`")
 
         except Exception:
             pass
@@ -502,7 +502,7 @@ async def start_cloudflare_tunnel_task(app: FastAPI):
                     print("  🎉 [REAL WEB ACTIVE] ALBAYAN CCTV LAB IS LIVE ONLINE!")
                     print("=" * 70)
                     print(f"  🌐 Real Web Portal URL: {public_url}")
-                    print(f"  🔑 Master Passcode:     {cfg_current.get('admin_password', 'albayan@2026')}")
+                    print(f"  🔑 Master Passcode:     {cfg_current.get('admin_password', '974621467097458841599745404128')}")
                     print("  📱 Open this link on your mobile phone or any PC anywhere!")
                     print("=" * 70 + "\n")
 
@@ -510,7 +510,7 @@ async def start_cloudflare_tunnel_task(app: FastAPI):
                     msg = (
                         f"🌐 <b>ALBAYAN CCTV IS LIVE ON THE REAL WEB!</b> 🌐\n\n"
                         f"🔗 <b>Web Portal:</b> {public_url}\n"
-                        f"🔑 <b>Password:</b> <code>{cfg_current.get('admin_password', 'albayan@2026')}</code>\n\n"
+                        f"🔑 <b>Password:</b> <code>{cfg_current.get('admin_password', '974621467097458841599745404128')}</code>\n\n"
                         f"📱 Open this link from anywhere in the world on mobile data to monitor all 4 cameras!"
                     )
                     send_telegram_message(msg)
@@ -943,6 +943,75 @@ def serve_screenshot(filename: str):
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
     raise HTTPException(status_code=404, detail="Screenshot not found")
 
+@app.get("/api/recordings")
+def get_recordings(
+    computer: Optional[str] = Query(None),
+    session: str = Depends(verify_session)
+):
+    results = []
+    all_videos = list(RECORDINGS_DIR.glob("*.mp4"))
+    all_videos.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    
+    target_pc = normalize_pc_name(computer) if computer and computer.lower() != "all" else None
+    
+    for f in all_videos:
+        name = f.name
+        pc_name = "unknown"
+        time_label = ""
+        date_label = ""
+        full_str = ""
+        try:
+            if name.startswith("[") and "]_" in name:
+                parts = name.split("]_")
+                pc_name = parts[0][1:].strip()
+                ts_part = parts[1].replace(".mp4", "")
+                dt = datetime.strptime(ts_part, "%Y%m%d_%H%M%S")
+                time_label = dt.strftime("%I:%M %p")
+                date_label = dt.strftime("%b %d, %Y")
+                full_str = dt.strftime("%Y-%m-%d %I:%M:%S %p")
+        except Exception:
+            pass
+
+        if not full_str:
+            mtime = f.stat().st_mtime
+            full_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %I:%M:%S %p")
+            time_label = datetime.fromtimestamp(mtime).strftime("%I:%M %p")
+            date_label = datetime.fromtimestamp(mtime).strftime("%b %d, %Y")
+
+        if target_pc and pc_name.lower() != target_pc.lower():
+            continue
+
+        results.append({
+            "filename": f.name,
+            "computer": pc_name,
+            "url": f"/api/video/{f.name}",
+            "time_label": time_label,
+            "date_label": date_label,
+            "created_at": full_str,
+            "timestamp": f.stat().st_mtime,
+            "size_mb": round(f.stat().st_size / (1024 * 1024), 2)
+        })
+
+    return {
+        "total": len(results),
+        "recordings": results
+    }
+
+@app.get("/api/video/{filename}")
+def serve_video(filename: str):
+    safe_name = Path(filename).name
+    path = RECORDINGS_DIR / safe_name
+    if path.exists() and path.suffix.lower() == ".mp4":
+        return FileResponse(
+            path,
+            media_type="video/mp4",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Disposition": f'inline; filename="{safe_name}"'
+            }
+        )
+    raise HTTPException(status_code=404, detail="Video not found")
+
 # ----------------- SYSTEM STATUS & AUTH -----------------
 
 @app.get("/api/status")
@@ -997,7 +1066,7 @@ def get_system_status(session: str = Depends(verify_session)):
 def login(payload: dict, request: Request, response: Response):
     password = payload.get("password")
     cfg = load_config()
-    expected_password = cfg.get("admin_password", "albayan@2026")
+    expected_password = cfg.get("admin_password", "974621467097458841599745404128")
     if password == expected_password:
         token = create_session_token()
         active_sessions.add(token)
@@ -1035,7 +1104,7 @@ def get_settings(session: str = Depends(verify_session)):
         "video_recording_enabled": cfg.get("video_recording_enabled", True),
         "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 5),
         "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300),
-        "admin_password": cfg.get("admin_password", "albayan@2026")
+        "admin_password": cfg.get("admin_password", "974621467097458841599745404128")
     }
 
 @app.post("/api/settings")
@@ -1219,6 +1288,11 @@ def get_cctv_dashboard_html():
           <span class="hidden sm:inline">Bot</span>
         </a>
 
+        <button onclick="openRecordingsModal()" class="text-xs text-purple-300 hover:text-white bg-purple-600/20 hover:bg-purple-600/30 px-3 py-1.5 rounded-lg border border-purple-500/30 transition flex items-center gap-1.5 font-semibold shadow-sm">
+          <i class="fa-solid fa-film"></i>
+          <span>Recordings</span>
+        </button>
+
         <button onclick="openSettingsModal()" class="text-xs text-amber-300 hover:text-white bg-amber-500/20 hover:bg-amber-500/30 px-3 py-1.5 rounded-lg border border-amber-500/30 transition flex items-center gap-1.5 font-semibold shadow-sm">
           <i class="fa-solid fa-sliders"></i>
           <span>Settings</span>
@@ -1396,7 +1470,7 @@ def get_cctv_dashboard_html():
             <label class="block font-semibold text-slate-300 flex items-center gap-1.5">
               <i class="fa-solid fa-key text-yellow-400"></i> Admin Passcode (പാസ്‌വേഡ് മാറ്റം)
             </label>
-            <input type="text" id="cfg_admin_password" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 font-mono focus:outline-none focus:border-amber-500" placeholder="albayan@2026">
+            <input type="text" id="cfg_admin_password" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 font-mono focus:outline-none focus:border-amber-500" placeholder="974621467097458841599745404128">
             <p class="text-[10px] text-slate-500">ഡാഷ്‌ബോർഡ് ലോഗിൻ ചെയ്യാനുള്ള മാസ്റ്റർ പാസ്‌വേഡ്.</p>
           </div>
 
@@ -1450,6 +1524,92 @@ def get_cctv_dashboard_html():
         </div>
 
       </form>
+    </div>
+  </div>
+
+  <!-- Video Recordings Archive Modal -->
+  <div id="recordingsModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl p-5 sm:p-6 text-slate-100 shadow-2xl space-y-4 my-auto max-h-[92vh] flex flex-col">
+      
+      <!-- Modal Header -->
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-purple-600/20 text-purple-400 flex items-center justify-center text-lg border border-purple-500/30">
+            <i class="fa-solid fa-film"></i>
+          </div>
+          <div>
+            <h2 class="text-base sm:text-lg font-bold text-white flex items-center gap-2">
+              <span>Video Recordings Archive</span>
+              <span class="text-xs font-normal text-purple-400 font-mono">(വീഡിയോ റെക്കോർഡിംഗുകൾ)</span>
+            </h2>
+            <p class="text-xs text-slate-400">All 2-minute auto-recorded screen video clips</p>
+          </div>
+        </div>
+        <button onclick="closeRecordingsModal()" class="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800 transition">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <!-- Video Player Container (hidden by default) -->
+      <div id="videoPlayerBox" class="hidden bg-black rounded-xl p-3 border border-purple-500/30 relative shadow-2xl">
+        <div class="flex items-center justify-between pb-2 text-xs text-slate-300 border-b border-slate-800 mb-2">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+            <span id="videoPlayerTitle" class="font-mono text-purple-300 font-bold"></span>
+          </div>
+          <button onclick="closeVideoPlayer()" class="text-slate-400 hover:text-white px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-xs transition">
+            <i class="fa-solid fa-xmark mr-1"></i> Close Player
+          </button>
+        </div>
+        <video id="recordingsVideoElement" controls autoplay class="w-full max-h-[45vh] rounded-lg bg-black"></video>
+      </div>
+
+      <!-- Filter Tabs & Actions -->
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
+        <div class="flex items-center gap-1.5 bg-slate-950/80 p-1 rounded-xl border border-slate-800 text-xs">
+          <button id="btnRecFilter_all" onclick="filterRecordings('all')" class="px-3 py-1.5 rounded-lg font-semibold bg-purple-600 text-white shadow transition">
+            ALL
+          </button>
+          <button id="btnRecFilter_albayan_1" onclick="filterRecordings('albayan 1')" class="px-2.5 py-1.5 rounded-lg font-medium text-slate-400 hover:text-white hover:bg-slate-800/60 transition">
+            CAM 1
+          </button>
+          <button id="btnRecFilter_albayan_2" onclick="filterRecordings('albayan 2')" class="px-2.5 py-1.5 rounded-lg font-medium text-slate-400 hover:text-white hover:bg-slate-800/60 transition">
+            CAM 2
+          </button>
+          <button id="btnRecFilter_albayan_3" onclick="filterRecordings('albayan 3')" class="px-2.5 py-1.5 rounded-lg font-medium text-slate-400 hover:text-white hover:bg-slate-800/60 transition">
+            CAM 3
+          </button>
+          <button id="btnRecFilter_albayan_4" onclick="filterRecordings('albayan 4')" class="px-2.5 py-1.5 rounded-lg font-medium text-slate-400 hover:text-white hover:bg-slate-800/60 transition">
+            CAM 4
+          </button>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="recordingsCountBadge" class="text-xs font-mono text-purple-400 bg-purple-500/10 px-2.5 py-1 rounded-lg border border-purple-500/20">
+            0 Videos
+          </span>
+          <button onclick="loadRecordings()" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-2.5 py-1.5 rounded-lg border border-slate-700 transition flex items-center gap-1">
+            <i class="fa-solid fa-arrows-rotate"></i>
+            <span>Refresh</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Recordings List Container -->
+      <div id="recordingsList" class="flex-1 overflow-y-auto space-y-2 max-h-[50vh] pr-1">
+        <div class="text-center py-10 text-slate-500 text-xs">Loading recordings...</div>
+      </div>
+
+      <!-- Footer Note -->
+      <div class="pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
+        <div class="flex items-center gap-1.5">
+          <i class="fa-brands fa-telegram text-sky-400"></i>
+          <span>Telegram-ലേക്ക് ഓട്ടോമാറ്റിക് ആയി വിഡിയോകൾ അയക്കുന്നുണ്ട് (@my_library_data_bot)</span>
+        </div>
+        <button onclick="closeRecordingsModal()" class="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition font-medium">
+          Close
+        </button>
+      </div>
+
     </div>
   </div>
 
@@ -1901,7 +2061,7 @@ def get_cctv_dashboard_html():
           document.getElementById("cfg_video_chunk_minutes").value = data.video_chunk_minutes || 2;
           document.getElementById("cfg_live_stream_interval").value = data.live_stream_interval_seconds || 5;
           document.getElementById("cfg_screenshot_interval").value = data.screenshot_interval_seconds || 300;
-          document.getElementById("cfg_admin_password").value = data.admin_password || "albayan@2026";
+          document.getElementById("cfg_admin_password").value = data.admin_password || "974621467097458841599745404128";
           document.getElementById("cfg_send_videos_to_telegram").checked = data.send_videos_to_telegram !== false;
           document.getElementById("cfg_video_recording_enabled").checked = data.video_recording_enabled !== false;
         }
@@ -1929,7 +2089,7 @@ def get_cctv_dashboard_html():
         video_chunk_minutes: parseInt(document.getElementById("cfg_video_chunk_minutes").value),
         live_stream_interval_seconds: parseInt(document.getElementById("cfg_live_stream_interval").value),
         screenshot_interval_seconds: parseInt(document.getElementById("cfg_screenshot_interval").value),
-        admin_password: document.getElementById("cfg_admin_password").value.trim() || "albayan@2026",
+        admin_password: document.getElementById("cfg_admin_password").value.trim() || "974621467097458841599745404128",
         send_videos_to_telegram: document.getElementById("cfg_send_videos_to_telegram").checked,
         video_recording_enabled: document.getElementById("cfg_video_recording_enabled").checked
       };
@@ -1966,6 +2126,133 @@ def get_cctv_dashboard_html():
       }
     }
 
+    let currentRecFilter = "all";
+    let cachedRecordings = [];
+
+    async function openRecordingsModal() {
+      document.getElementById("recordingsModal").classList.remove("hidden");
+      await loadRecordings();
+    }
+
+    function closeRecordingsModal() {
+      document.getElementById("recordingsModal").classList.add("hidden");
+      closeVideoPlayer();
+    }
+
+    function closeVideoPlayer() {
+      const box = document.getElementById("videoPlayerBox");
+      const vid = document.getElementById("recordingsVideoElement");
+      if (vid) {
+        vid.pause();
+        vid.src = "";
+      }
+      box.classList.add("hidden");
+    }
+
+    function playVideo(url, title) {
+      const box = document.getElementById("videoPlayerBox");
+      const vid = document.getElementById("recordingsVideoElement");
+      const titleEl = document.getElementById("videoPlayerTitle");
+      titleEl.innerText = title || "Screen Recording";
+      vid.src = url;
+      box.classList.remove("hidden");
+      vid.play().catch(e => console.log("Autoplay blocked:", e));
+      box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+
+    async function loadRecordings() {
+      const listEl = document.getElementById("recordingsList");
+      listEl.innerHTML = '<div class="text-center py-10 text-slate-400 text-xs"><i class="fa-solid fa-spinner fa-spin text-purple-400 mr-2 text-base"></i> Loading video recordings...</div>';
+      try {
+        const res = await fetch("/api/recordings");
+        if (res.ok) {
+          const data = await res.json();
+          cachedRecordings = data.recordings || [];
+          renderRecordingsList();
+        } else {
+          listEl.innerHTML = '<div class="text-center py-10 text-rose-400 text-xs">Failed to load recordings</div>';
+        }
+      } catch (err) {
+        listEl.innerHTML = '<div class="text-center py-10 text-rose-400 text-xs">Network error loading recordings</div>';
+      }
+    }
+
+    function filterRecordings(filter) {
+      currentRecFilter = filter;
+      ["all", "albayan 1", "albayan 2", "albayan 3", "albayan 4"].forEach(f => {
+        const btnId = "btnRecFilter_" + f.replace(" ", "_");
+        const btn = document.getElementById(btnId);
+        if (btn) {
+          if (f === filter) {
+            btn.className = "px-3 py-1.5 rounded-lg font-semibold bg-purple-600 text-white shadow transition";
+          } else {
+            btn.className = "px-2.5 py-1.5 rounded-lg font-medium text-slate-400 hover:text-white hover:bg-slate-800/60 transition";
+          }
+        }
+      });
+      renderRecordingsList();
+    }
+
+    function renderRecordingsList() {
+      const listEl = document.getElementById("recordingsList");
+      const countBadge = document.getElementById("recordingsCountBadge");
+      
+      let filtered = cachedRecordings;
+      if (currentRecFilter !== "all") {
+        filtered = cachedRecordings.filter(r => r.computer.toLowerCase() === currentRecFilter.toLowerCase());
+      }
+
+      countBadge.innerText = `${filtered.length} Video${filtered.length === 1 ? '' : 's'}`;
+
+      if (filtered.length === 0) {
+        listEl.innerHTML = `
+          <div class="text-center py-12 text-slate-500">
+            <i class="fa-solid fa-film text-3xl mb-2 block opacity-30"></i>
+            <p class="text-xs">No video recordings found for this selection.</p>
+            <p class="text-[11px] text-slate-600 mt-1">Screen recorder saves a new MP4 video clip every 2 minutes automatically.</p>
+          </div>
+        `;
+        return;
+      }
+
+      let html = "";
+      filtered.forEach((rec) => {
+        const pcLabel = rec.computer.toUpperCase();
+        const titleSafe = `${pcLabel} - ${rec.created_at}`;
+        html += `
+          <div class="flex items-center justify-between p-3 bg-slate-950/70 hover:bg-slate-800/60 border border-slate-800/80 rounded-xl transition gap-3">
+            <div class="flex items-center gap-3 min-w-0">
+              <div class="w-10 h-10 rounded-lg bg-purple-600/10 text-purple-400 border border-purple-500/20 flex items-center justify-center text-sm shrink-0">
+                <i class="fa-solid fa-play"></i>
+              </div>
+              <div class="min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="text-xs font-semibold text-white truncate">${rec.filename}</span>
+                  <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-900/40 text-purple-300 border border-purple-500/30 font-semibold">${pcLabel}</span>
+                  <span class="text-[10px] font-mono text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">${rec.size_mb} MB</span>
+                </div>
+                <div class="text-[11px] text-slate-400 flex items-center gap-2 mt-0.5 font-mono">
+                  <span><i class="fa-regular fa-clock mr-1 text-slate-500"></i>${rec.created_at}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2 shrink-0">
+              <button onclick="playVideo('${rec.url}', '${titleSafe}')" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg transition flex items-center gap-1.5 shadow-md shadow-purple-600/20">
+                <i class="fa-solid fa-play"></i>
+                <span class="hidden sm:inline">Play</span>
+              </button>
+              <a href="${rec.url}" download="${rec.filename}" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs rounded-lg transition border border-slate-700" title="Download Video">
+                <i class="fa-solid fa-download"></i>
+              </a>
+            </div>
+          </div>
+        `;
+      });
+
+      listEl.innerHTML = html;
+    }
+
     // Boot
     window.addEventListener("DOMContentLoaded", () => {
       initCCTVGrid();
@@ -1993,7 +2280,7 @@ if __name__ == "__main__":
     print("  ALBAYAN CCTV LAB MONITOR - 4 CAMERAS REAL WEB SERVER")
     print("=" * 65)
     print(f" Real Web Status:   Connecting Cloudflare HTTPS Tunnel...")
-    print(f" Master Passcode:   albayan@2026")
+    print(f" Master Passcode:   974621467097458841599745404128")
     print(f" Monitored PCs:     albayan 1, albayan 2, albayan 3, albayan 4")
     print(f" Capture Mode:      5-Min Screenshots (CCTV Timeline Reel)")
     print(f" Live Feed:         CCTV Quad Screen (every 3-5 seconds)")

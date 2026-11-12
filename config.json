@@ -2,15 +2,15 @@
   "server_host": "0.0.0.0",
   "server_port": 8899,
   "server_ip": "192.168.1.2",
-  "public_web_url": "https://johnny-environment-usual-luxury.trycloudflare.com",
+  "public_web_url": "https://had-rate-heroes-matt.trycloudflare.com",
   "enable_cloud_tunnel": true,
-  "admin_password": "albayan@2026",
+  "admin_password": "974621467097458841599745404128",
   "api_secret": "secure_study_monitor_secret_key_8899",
   "telegram_bot_token": "9287027030:AAFeB2BZyF9G87R6ulycSzFFY9yIuqepIFQ",
   "telegram_chat_ids": [
     8003387798
   ],
-  "send_videos_to_telegram": false,
+  "send_videos_to_telegram": true,
   "video_recording_enabled": true,
   "video_chunk_minutes": 2,
   "video_fps": 10,
