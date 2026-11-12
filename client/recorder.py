@@ -58,6 +58,11 @@ def get_machine_id():
 
 def discover_server_url():
     candidates = []
+    # 1. Local server priority (fastest and always reliable on host)
+    for local in ["http://127.0.0.1:8899", "http://localhost:8899"]:
+        if local not in candidates:
+            candidates.append(local)
+
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -67,35 +72,41 @@ def discover_server_url():
                     candidates.append(s)
         except Exception:
             pass
+
     if GLOBAL_CONFIG_PATH.exists():
         try:
             with open(GLOBAL_CONFIG_PATH, "r", encoding="utf-8") as f:
                 g = json.load(f)
-                pub = g.get("public_web_url")
-                if pub and pub not in candidates:
-                    candidates.insert(0, pub)
                 sip = g.get("server_ip")
                 sport = g.get("server_port", 8899)
                 if sip:
                     url = f"http://{sip}:{sport}"
                     if url not in candidates:
                         candidates.append(url)
+                pub = g.get("public_web_url")
+                if pub and pub not in candidates:
+                    candidates.append(pub)
         except Exception:
             pass
 
-    for fallback in ["http://127.0.0.1:8899", "http://192.168.1.2:8899", "http://192.168.1.3:8899"]:
+    for fallback in ["http://192.168.1.2:8899", "http://192.168.1.3:8899"]:
         if fallback not in candidates:
             candidates.append(fallback)
 
     for url in candidates:
         try:
-            r = requests.get(f"{url}/api/status", timeout=2.5)
-            if r.status_code in [200, 401]:
+            r = requests.get(f"{url}/api/ping", timeout=2.0)
+            if r.status_code == 200:
                 return url
         except Exception:
-            pass
+            try:
+                r2 = requests.get(f"{url}/api/status", timeout=2.0)
+                if r2.status_code in [200, 401]:
+                    return url
+            except Exception:
+                pass
 
-    return candidates[0] if candidates else "http://127.0.0.1:8899"
+    return "http://127.0.0.1:8899"
 
 def auto_register_pc():
     dev_id = get_machine_id()
@@ -257,6 +268,16 @@ def show_recording_popup():
         full_text = "● SCREEN RECORDING STARTED"
         current_idx = 0
 
+        def close_window():
+            try:
+                root.quit()
+            except Exception:
+                pass
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
         def type_step():
             nonlocal current_idx
             if current_idx < len(full_text):
@@ -264,66 +285,13 @@ def show_recording_popup():
                 type_lbl.config(text=full_text[:current_idx])
                 root.after(45, type_step)
             else:
-                # Keep visible for 3 seconds then close and stay running in background
-                root.after(3000, root.destroy)
+                # Keep visible for 3 seconds then close cleanly and continue background recording
+                root.after(3000, close_window)
 
         root.after(150, type_step)
         root.mainloop()
     except Exception as e:
         print(f"[Popup] Notice: {e}")
-
-def show_snapshot_toast():
-    """
-    Subtle, non-disturbing notification for the computer user:
-    - User knows a 5-min snapshot was taken (study monitor overt awareness).
-    - Positioned at bottom-right corner just above the taskbar.
-    - Uses Windows SWP_NOACTIVATE: NEVER steals keyboard focus, mouse clicks, or interrupts games/typing!
-    - Soft chime/click sound.
-    - Auto-closes smoothly in 2.5 seconds.
-    """
-    try:
-        import winsound
-        winsound.PlaySound("SystemAsterisk", winsound.SND_ALIAS | winsound.SND_ASYNC)
-    except Exception:
-        pass
-
-    try:
-        import tkinter as tk
-        root = tk.Tk()
-        root.overrideredirect(True)
-        root.attributes("-topmost", True)
-        root.attributes("-alpha", 0.92)
-
-        sw = root.winfo_screenwidth()
-        sh = root.winfo_screenheight()
-        w, h = 330, 62
-        x = sw - w - 20
-        y = sh - h - 55
-
-        root.geometry(f"{w}x{h}+{x}+{y}")
-        root.configure(bg="#090d16")
-
-        f = tk.Frame(root, bg="#111827", highlightbackground="#10b981", highlightthickness=1.5, padx=12, pady=8)
-        f.pack(fill="both", expand=True)
-
-        lbl1 = tk.Label(f, text="📸 CCTV SNAPSHOT CAPTURED", font=("Segoe UI", 9, "bold"), fg="#34d399", bg="#111827")
-        lbl1.pack(anchor="w")
-
-        lbl2 = tk.Label(f, text=f"[{COMPUTER_NAME.upper()}] 5-Min Screen Saved • പഠന നിരീക്ഷണം", font=("Segoe UI", 8), fg="#9ca3af", bg="#111827")
-        lbl2.pack(anchor="w")
-
-        # Crucial: Prevent stealing focus from current active window
-        hwnd = root.winfo_id()
-        user32 = ctypes.windll.user32
-        SWP_NOACTIVATE = 0x0010
-        SWP_SHOWWINDOW = 0x0040
-        HWND_TOPMOST = -1
-        user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)
-
-        root.after(2500, root.destroy)
-        root.mainloop()
-    except Exception:
-        pass
 
 # ----------------- 3. LIVE CCTV STREAMER (EVERY 5 SECONDS) -----------------
 
@@ -364,9 +332,6 @@ def five_minute_screenshot_worker():
         try:
             img = capture_desktop_image()
             if img:
-                # Overt notification: computer user knows screen was captured (without focus steal / disturbance)
-                threading.Thread(target=show_snapshot_toast, daemon=True).start()
-
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"[{COMPUTER_NAME}]_{timestamp_str}.jpg"
                 
@@ -487,14 +452,15 @@ def video_recorder_worker():
     for prev_file in TEMP_DIR.glob("*.mp4"):
         upload_queue.put(str(prev_file))
 
-    with mss.mss() as sct:
+    sct_class = getattr(mss, "MSS", mss.mss)
+    with sct_class() as sct:
         mon = sct.monitors[1]
         width = mon["width"]
         height = mon["height"]
 
-        # Ensure dimensions are divisible by 2 for H.264
-        width = width if width % 2 == 0 else width - 1
-        height = height if height % 2 == 0 else height - 1
+        # Ensure dimensions are divisible by 16 for H.264 video compatibility
+        width = (width // 16) * 16
+        height = (height // 16) * 16
         capture_box = {"top": mon["top"], "left": mon["left"], "width": width, "height": height}
 
         target_frame_time = 1.0 / VIDEO_FPS
@@ -512,6 +478,7 @@ def video_recorder_worker():
                     codec="libx264",
                     quality=6,
                     pixelformat="yuv420p",
+                    macro_block_size=16,
                     output_params=["-movflags", "+faststart"]
                 )
             except Exception as err:
@@ -560,8 +527,8 @@ if __name__ == "__main__":
     print(f"  Video Clips: Every {CHUNK_MINUTES} Minutes ({VIDEO_FPS} FPS)")
     print(f"  Live Stream: CCTV Quad Grid (every {LIVE_INTERVAL}s)")
     print(f"=================================================")
-    print(f"Initializing (10s startup delay)...")
-    time.sleep(10)
+    print(f"Initializing (2s startup delay)...")
+    time.sleep(2)
 
     # Show warning popup
     show_recording_popup()

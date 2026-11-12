@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import io
 import json
 import time
 import secrets
@@ -32,8 +33,32 @@ active_sessions = set()
 # Configuration
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "albayan@2026")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9287027030:AAFeB2BZyF9G87R6ulycSzFFY9yIuqepIFQ")
+TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "8003387798"))
 API_SECRET = os.getenv("API_SECRET", "secure_study_monitor_secret_key_8899")
 DEFAULT_PC_NAMES = ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]
+
+def send_telegram_message(text: str):
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10)
+    except Exception:
+        pass
+
+def send_telegram_video(video_bytes: bytes, filename: str, caption: str):
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
+    try:
+        requests.post(
+            url,
+            data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "parse_mode": "HTML"},
+            files={"video": (filename, io.BytesIO(video_bytes), "video/mp4")},
+            timeout=30
+        )
+    except Exception as e:
+        print(f"[Telegram Vercel] Error sending video: {e}")
 
 def create_session_token() -> str:
     ts = str(int(time.time()))
@@ -387,6 +412,10 @@ async def client_live_frame(
 
     return {"status": "ok"}
 
+@app.get("/api/ping")
+def ping_health():
+    return {"ok": True, "status": "online"}
+
 @app.post("/api/client/upload_video")
 @app.post("/api/client/upload")
 async def client_upload_video(
@@ -401,11 +430,28 @@ async def client_upload_video(
     clean = normalize_pc_name(computer_name)
     client_pings[clean] = time.time()
     dest = TMP_RECORDINGS / video.filename
+    content = b""
     try:
         content = await video.read()
         dest.write_bytes(content)
     except Exception:
         pass
+
+    if content:
+        import html
+        from datetime import datetime
+        file_size_mb = round(len(content) / (1024 * 1024), 2)
+        now_str = datetime.now().strftime("%I:%M %p")
+        caption = (
+            f"📹 <b>[{html.escape(clean.upper())}] Screen Video Recording</b>\n"
+            f"🕒 Time: {now_str}\n"
+            f"📁 File: <code>{html.escape(video.filename)}</code>\n"
+            f"📦 Size: {file_size_mb} MB"
+        )
+        try:
+            send_telegram_video(content, video.filename, caption)
+        except Exception:
+            pass
 
     return {"ok": True, "filename": video.filename}
 
@@ -415,6 +461,16 @@ def client_boot_notify(payload: dict, request: Request, x_api_secret: Optional[s
         raise HTTPException(status_code=403, detail="Invalid API Secret")
     name = normalize_pc_name(payload.get("computer_name", "albayan 1"))
     client_pings[name] = time.time()
+    import html
+    from datetime import datetime
+    now_str = datetime.now().strftime("%I:%M:%S %p")
+    client_ip = request.client.host if request.client else "unknown"
+    send_telegram_message(
+        f"🚨 <b>[{html.escape(name.upper())}] Computer Turned ON!</b>\n"
+        f"🕒 Time: <b>{now_str}</b>\n"
+        f"🌐 IP: <code>{client_ip}</code>\n"
+        f"📹 Automatic screen video recording & CCTV live stream started."
+    )
     return {"ok": True}
 
 @app.post("/api/client/ping")

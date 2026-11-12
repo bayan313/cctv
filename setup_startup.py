@@ -44,8 +44,8 @@ if appdata:
     client_vbs = startup / "StudyMonitorClient.vbs"
 
     # Clean escape sequences for VBS
-    s_script = f'Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run """{pythonw_exe}"" ""{SERVER_PY}""", 0, False\r\n'
-    c_script = f'Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run """{pythonw_exe}"" ""{CLIENT_PY}""", 0, False\r\n'
+    s_script = f'Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.CurrentDirectory = "{BASE_DIR}"\r\nWshShell.Run """{pythonw_exe}"" ""{SERVER_PY}""", 0, False\r\n'
+    c_script = f'Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.CurrentDirectory = "{BASE_DIR}"\r\nWshShell.Run """{pythonw_exe}"" ""{CLIENT_PY}""", 0, False\r\n'
 
     server_vbs.write_text(s_script, encoding="utf-8")
     client_vbs.write_text(c_script, encoding="utf-8")

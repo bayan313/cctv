@@ -11,10 +11,12 @@ import hmac
 import hashlib
 import zipfile
 import subprocess
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
+import html
 
 try:
     import truststore
@@ -170,28 +172,38 @@ def send_telegram_message(text: str):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     for cid in chat_ids:
         try:
-            requests.post(url, json={"chat_id": cid, "text": text, "parse_mode": "Markdown"}, timeout=5)
-        except Exception:
-            pass
+            r = requests.post(url, json={"chat_id": cid, "text": text, "parse_mode": "HTML"}, timeout=10)
+            if r.status_code != 200:
+                requests.post(url, json={"chat_id": cid, "text": text}, timeout=10)
+        except Exception as e:
+            print(f"[Telegram] Error sending message: {e}")
 
 def send_telegram_photo(photo_path: Path, caption: str):
     cfg = load_config()
     token = cfg.get("telegram_bot_token")
     chat_ids = cfg.get("telegram_chat_ids", [])
-    if not token or not chat_ids:
+    if not token or not chat_ids or not photo_path.exists():
         return
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
     for cid in chat_ids:
         try:
             with open(photo_path, "rb") as pf:
-                requests.post(
+                r = requests.post(
                     url,
-                    data={"chat_id": cid, "caption": caption, "parse_mode": "Markdown"},
-                    files={"photo": pf},
-                    timeout=20
+                    data={"chat_id": cid, "caption": caption, "parse_mode": "HTML"},
+                    files={"photo": (photo_path.name, pf, "image/jpeg")},
+                    timeout=30
                 )
-        except Exception:
-            pass
+                if r.status_code != 200:
+                    pf.seek(0)
+                    requests.post(
+                        url,
+                        data={"chat_id": cid, "caption": caption},
+                        files={"photo": (photo_path.name, pf, "image/jpeg")},
+                        timeout=30
+                    )
+        except Exception as e:
+            print(f"[Telegram] Error sending photo: {e}")
 
 def send_telegram_video(video_path: Path, caption: str):
     cfg = load_config()
@@ -205,12 +217,21 @@ def send_telegram_video(video_path: Path, caption: str):
     for cid in chat_ids:
         try:
             with open(video_path, "rb") as vf:
-                requests.post(
+                r = requests.post(
                     url,
-                    data={"chat_id": cid, "caption": caption, "parse_mode": "Markdown"},
-                    files={"video": vf},
-                    timeout=90
+                    data={"chat_id": cid, "caption": caption, "parse_mode": "HTML"},
+                    files={"video": (video_path.name, vf, "video/mp4")},
+                    timeout=120
                 )
+                if r.status_code != 200:
+                    print(f"[Telegram] sendVideo failed ({r.status_code}): {r.text}")
+                    vf.seek(0)
+                    requests.post(
+                        url,
+                        data={"chat_id": cid, "caption": caption},
+                        files={"video": (video_path.name, vf, "video/mp4")},
+                        timeout=120
+                    )
         except Exception as e:
             print(f"[Telegram] Error sending video: {e}")
 
@@ -449,57 +470,60 @@ async def start_cloudflare_tunnel_task(app: FastAPI):
     cmd = [str(cloudflared_bin), "tunnel", "--url", f"http://127.0.0.1:{port}"]
     print(f"[Tunnel] Opening Cloudflare HTTPS Tunnel on port {port}...")
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        app.state.tunnel_proc = proc
+    while True:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE
+            )
+            app.state.tunnel_proc = proc
 
-        import re, webbrowser
-        url_pattern = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
-        public_url = None
+            import re, webbrowser
+            url_pattern = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
+            public_url = None
 
-        while True:
-            line = await proc.stderr.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="ignore")
-            match = url_pattern.search(text)
-            if match and not public_url:
-                public_url = match.group(0)
-                app.state.public_web_url = public_url
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="ignore")
+                match = url_pattern.search(text)
+                if match and not public_url:
+                    public_url = match.group(0)
+                    app.state.public_web_url = public_url
 
-                # Save into config
-                cfg_current = load_config()
-                cfg_current["public_web_url"] = public_url
-                save_config(cfg_current)
+                    # Save into config
+                    cfg_current = load_config()
+                    cfg_current["public_web_url"] = public_url
+                    save_config(cfg_current)
 
-                print("\n" + "=" * 70)
-                print("  🎉 [REAL WEB ACTIVE] ALBAYAN CCTV LAB IS LIVE ONLINE!")
-                print("=" * 70)
-                print(f"  🌐 Real Web Portal URL: {public_url}")
-                print(f"  🔑 Master Passcode:     {cfg_current.get('admin_password', 'albayan@2026')}")
-                print("  📱 Open this link on your mobile phone or any PC anywhere!")
-                print("=" * 70 + "\n")
+                    print("\n" + "=" * 70)
+                    print("  🎉 [REAL WEB ACTIVE] ALBAYAN CCTV LAB IS LIVE ONLINE!")
+                    print("=" * 70)
+                    print(f"  🌐 Real Web Portal URL: {public_url}")
+                    print(f"  🔑 Master Passcode:     {cfg_current.get('admin_password', 'albayan@2026')}")
+                    print("  📱 Open this link on your mobile phone or any PC anywhere!")
+                    print("=" * 70 + "\n")
 
-                # Telegram alert
-                msg = (
-                    f"🌐 *ALBAYAN CCTV IS LIVE ON THE REAL WEB!* 🌐\n\n"
-                    f"🔗 *Web Portal:* {public_url}\n"
-                    f"🔑 *Password:* `{cfg_current.get('admin_password', 'albayan@2026')}`\n\n"
-                    f"📱 Open this link from anywhere in the world on mobile data to monitor all 4 cameras!"
-                )
-                send_telegram_message(msg)
+                    # Telegram alert
+                    msg = (
+                        f"🌐 <b>ALBAYAN CCTV IS LIVE ON THE REAL WEB!</b> 🌐\n\n"
+                        f"🔗 <b>Web Portal:</b> {public_url}\n"
+                        f"🔑 <b>Password:</b> <code>{cfg_current.get('admin_password', 'albayan@2026')}</code>\n\n"
+                        f"📱 Open this link from anywhere in the world on mobile data to monitor all 4 cameras!"
+                    )
+                    send_telegram_message(msg)
 
-                # Open browser
-                try:
-                    webbrowser.open(public_url)
-                except Exception:
-                    pass
-    except Exception as e:
-        print(f"[Tunnel] Tunnel error: {e}")
+                    # Open browser
+                    try:
+                        webbrowser.open(public_url)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[Tunnel] Tunnel error: {e}")
+
+        await asyncio.sleep(5)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -659,6 +683,10 @@ def download_client_zip(session: str = Depends(verify_session)):
 
 # ----------------- CLIENT DATA INGESTION -----------------
 
+@app.get("/api/ping")
+def ping_health():
+    return {"ok": True, "status": "online"}
+
 @app.post("/api/client/ping")
 def client_ping(
     request: Request,
@@ -783,7 +811,12 @@ async def client_upload_video(
     # Send video automatically to Telegram
     if cfg.get("send_videos_to_telegram", True):
         now_str = datetime.now().strftime("%I:%M %p")
-        caption = f"📹 *[{pc_name.upper()}] Screen Video Recording*\n🕒 Time: {now_str}\n📁 File: `{dest_path.name}`\n📦 Size: {file_size_mb} MB"
+        caption = (
+            f"📹 <b>[{html.escape(pc_name.upper())}] Screen Video Recording</b>\n"
+            f"🕒 Time: {now_str}\n"
+            f"📁 File: <code>{html.escape(dest_path.name)}</code>\n"
+            f"📦 Size: {file_size_mb} MB"
+        )
         threading.Thread(target=send_telegram_video, args=(dest_path, caption), daemon=True).start()
 
     return {"ok": True, "filename": dest_path.name}
@@ -800,9 +833,9 @@ def client_boot_notify(payload: dict, request: Request, x_api_secret: Optional[s
 
     print(f"[Boot Notify] [{pc_name}] Computer turned ON at {now_str} (IP: {client_ip})")
     send_telegram_message(
-        f"🚨 *[{pc_name.upper()}] Computer Turned ON!*\n"
-        f"🕒 Time: *{now_str}*\n"
-        f"🌐 IP: `{client_ip}`\n"
+        f"🚨 <b>[{html.escape(pc_name.upper())}] Computer Turned ON!</b>\n"
+        f"🕒 Time: <b>{now_str}</b>\n"
+        f"🌐 IP: <code>{client_ip}</code>\n"
         f"📹 Automatic screen video recording & CCTV live stream started."
     )
     return {"ok": True}
