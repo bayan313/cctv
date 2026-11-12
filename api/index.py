@@ -31,6 +31,7 @@ active_sessions = set()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "albayan@2026")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9287027030:AAFeB2BZyF9G87R6ulycSzFFY9yIuqepIFQ")
 API_SECRET = os.getenv("API_SECRET", "secure_study_monitor_secret_key_8899")
+LOCAL_SERVER_URL = os.getenv("LOCAL_SERVER_URL", "http://192.168.1.2:8899")
 DEFAULT_PC_NAMES = ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]
 
 def verify_session(session_token: Optional[str] = Depends(cookie_scheme)):
@@ -150,7 +151,7 @@ def get_live_frame(computer_name: str):
       <rect x="80" y="80" width="800" height="380" fill="none" stroke="#334155" stroke-width="2"/>
       <text x="100" y="120" fill="#64748b" font-family="monospace" font-size="18">CAM // {computer_name.upper()}</text>
       <text x="480" y="270" fill="#ef4444" font-family="monospace" font-size="24" text-anchor="middle">[ CLOUD PROXY MODE ]</text>
-      <text x="480" y="310" fill="#94a3b8" font-family="monospace" font-size="14" text-anchor="middle">Local CCTV Server running on http://192.168.1.3:8899</text>
+      <text x="480" y="310" fill="#94a3b8" font-family="monospace" font-size="14" text-anchor="middle">Local CCTV Server running on {LOCAL_SERVER_URL}</text>
     </svg>"""
     return Response(content=svg, media_type="image/svg+xml")
 
@@ -204,11 +205,16 @@ def get_cctv_dashboard_html():
   <title>Albayan CCTV Monitor - Cloud View</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen p-6">
-  <div class="max-w-4xl mx-auto text-center">
-    <h1 class="text-2xl font-bold text-white mb-4">Albayan CCTV Cloud Node</h1>
-    <p class="text-slate-400 mb-6">Central Local Server is active at http://192.168.1.3:8899</p>
-    <a href="/api/download/setup-script" download="albayan_setup.bat" class="inline-block bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-3 rounded-xl font-bold">Download 1-Click Installer</a>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-6 flex flex-col items-center justify-center">
+  <div class="max-w-xl w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center shadow-2xl">
+    <div class="inline-flex p-3 bg-indigo-500/10 text-indigo-400 rounded-2xl mb-4 text-2xl font-bold">📡 Albayan CCTV Lab Cloud</div>
+    <h1 class="text-xl font-bold text-white mb-2">Central Local CCTV Monitor</h1>
+    <p class="text-slate-400 text-sm mb-6">Lab computers capture and stream directly to your local hub server at <strong class="text-indigo-400">{LOCAL_SERVER_URL}</strong></p>
+    
+    <div class="space-y-3">
+      <a href="{LOCAL_SERVER_URL}" class="block w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 px-4 rounded-xl transition text-sm">Open Local CCTV Dashboard</a>
+      <a href="/api/download/setup-script" download="albayan_setup.bat" class="block w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-3 px-4 rounded-xl transition text-sm">Download 1-Click Client Setup (.bat)</a>
+    </div>
   </div>
 </body>
 </html>"""

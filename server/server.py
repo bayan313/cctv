@@ -35,8 +35,11 @@ RECORDINGS_DIR = BASE_DIR / "server" / "recordings"
 STATIC_DIR = BASE_DIR / "server" / "static"
 CLIENT_DIR = BASE_DIR / "client"
 
-RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
-STATIC_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+    STATIC_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 DEFAULT_PC_NAMES = ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]
 
@@ -85,8 +88,11 @@ def load_config():
     return {}
 
 def save_config(cfg):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception:
+        pass
 
 config = load_config()
 
