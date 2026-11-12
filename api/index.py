@@ -358,6 +358,36 @@ async def client_live_frame(
 
     return {"status": "ok"}
 
+@app.post("/api/client/upload_video")
+@app.post("/api/client/upload")
+async def client_upload_video(
+    request: Request,
+    video: UploadFile = File(...),
+    computer_name: str = Form("albayan 1"),
+    x_api_secret: Optional[str] = Header(None)
+):
+    if x_api_secret != API_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid API Secret")
+
+    clean = normalize_pc_name(computer_name)
+    client_pings[clean] = time.time()
+    dest = TMP_RECORDINGS / video.filename
+    try:
+        content = await video.read()
+        dest.write_bytes(content)
+    except Exception:
+        pass
+
+    return {"ok": True, "filename": video.filename}
+
+@app.post("/api/client/boot_notify")
+def client_boot_notify(payload: dict, request: Request, x_api_secret: Optional[str] = Header(None)):
+    if x_api_secret != API_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid API Secret")
+    name = normalize_pc_name(payload.get("computer_name", "albayan 1"))
+    client_pings[name] = time.time()
+    return {"ok": True}
+
 @app.post("/api/client/ping")
 def client_ping(payload: dict, x_api_secret: Optional[str] = Header(None)):
     if x_api_secret != API_SECRET:

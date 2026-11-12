@@ -8,6 +8,7 @@ import uuid
 import socket
 import ctypes
 import threading
+import queue
 import subprocess
 from pathlib import Path
 from datetime import datetime
@@ -22,6 +23,7 @@ import requests
 from PIL import ImageGrab, Image
 import mss
 import numpy as np
+import imageio
 
 # Directories
 CLIENT_DIR = Path(__file__).resolve().parent
@@ -30,6 +32,8 @@ CONFIG_PATH = CLIENT_DIR / "client_config.json"
 GLOBAL_CONFIG_PATH = BASE_DIR / "config.json"
 TEMP_DIR = CLIENT_DIR / "temp_records"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+upload_queue = queue.Queue()
 
 DEFAULT_PC_NAMES = ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]
 
@@ -146,6 +150,9 @@ SERVER_URL = CONFIG.get("server_url", "http://127.0.0.1:8899").rstrip("/")
 API_SECRET = CONFIG.get("api_secret", "secure_study_monitor_secret_key_8899")
 SCREENSHOT_INTERVAL = int(CONFIG.get("screenshot_interval_seconds", 300)) # 5 minutes
 LIVE_INTERVAL = int(CONFIG.get("live_stream_interval_seconds", 5)) # 5 seconds
+VIDEO_RECORDING_ENABLED = bool(CONFIG.get("video_recording_enabled", True))
+VIDEO_FPS = int(CONFIG.get("video_fps", 10))
+CHUNK_MINUTES = int(CONFIG.get("video_chunk_minutes", 2))
 
 # ----------------- 1. RELIABLE NON-BLACK SCREEN CAPTURE -----------------
 
@@ -394,19 +401,155 @@ def auto_updater_worker():
             pass
         time.sleep(1800)
 
+# ----------------- 7. VIDEO RECORDER & UPLOADER -----------------
+
+def upload_worker():
+    """Uploads completed MP4 video clips to the server."""
+    while True:
+        file_path = upload_queue.get()
+        if not file_path:
+            break
+
+        path_obj = Path(file_path)
+        if not path_obj.exists():
+            upload_queue.task_done()
+            continue
+
+        uploaded = False
+        retry_delay = 3
+        while not uploaded:
+            try:
+                srv_url = discover_server_url()
+                with open(path_obj, "rb") as f:
+                    files = {"video": (path_obj.name, f, "video/mp4")}
+                    data = {"computer_name": COMPUTER_NAME}
+                    headers = {"X-API-Secret": API_SECRET}
+                    res = requests.post(
+                        f"{srv_url}/api/client/upload_video",
+                        files=files,
+                        data=data,
+                        headers=headers,
+                        timeout=90
+                    )
+                    if res.status_code == 200:
+                        uploaded = True
+                        print(f"[{COMPUTER_NAME}] Uploaded video {path_obj.name} to server!")
+                        try:
+                            path_obj.unlink()
+                        except Exception:
+                            pass
+                    else:
+                        time.sleep(retry_delay)
+                        retry_delay = min(60, retry_delay * 2)
+            except Exception as e:
+                time.sleep(retry_delay)
+                retry_delay = min(60, retry_delay * 2)
+
+        upload_queue.task_done()
+
+def video_recorder_worker():
+    """Records smooth screen video in 2-minute MP4 clips and uploads them."""
+    if not VIDEO_RECORDING_ENABLED:
+        print(f"[{COMPUTER_NAME}] Video recording disabled in config.")
+        while True:
+            time.sleep(60)
+
+    print(f"[{COMPUTER_NAME}] Screen Video Recorder active ({VIDEO_FPS} FPS, {CHUNK_MINUTES}-minute clips)...")
+
+    # Enqueue any pending files from previous session
+    for prev_file in TEMP_DIR.glob("*.mp4"):
+        upload_queue.put(str(prev_file))
+
+    with mss.mss() as sct:
+        mon = sct.monitors[1]
+        width = mon["width"]
+        height = mon["height"]
+
+        # Ensure dimensions are divisible by 2 for H.264
+        width = width if width % 2 == 0 else width - 1
+        height = height if height % 2 == 0 else height - 1
+        capture_box = {"top": mon["top"], "left": mon["left"], "width": width, "height": height}
+
+        target_frame_time = 1.0 / VIDEO_FPS
+        fallback_frame = np.zeros((height, width, 3), dtype=np.uint8)
+
+        while True:
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            video_filename = f"[{COMPUTER_NAME}]_{timestamp_str}.mp4"
+            current_video_path = TEMP_DIR / video_filename
+
+            try:
+                writer = imageio.get_writer(
+                    str(current_video_path),
+                    fps=VIDEO_FPS,
+                    codec="libx264",
+                    quality=6,
+                    pixelformat="yuv420p",
+                    output_params=["-movflags", "+faststart"]
+                )
+            except Exception as err:
+                print(f"[{COMPUTER_NAME}] Video writer error: {err}")
+                time.sleep(3)
+                continue
+
+            chunk_start_time = time.time()
+            chunk_end_time = chunk_start_time + (CHUNK_MINUTES * 60)
+            frame_count = 0
+
+            while time.time() < chunk_end_time:
+                loop_start = time.time()
+                try:
+                    raw_frame = np.array(sct.grab(capture_box))
+                    rgb_frame = raw_frame[:, :, [2, 1, 0]]
+                    writer.append_data(rgb_frame)
+                    frame_count += 1
+                except Exception:
+                    try:
+                        writer.append_data(fallback_frame)
+                        frame_count += 1
+                    except Exception:
+                        pass
+
+                elapsed = time.time() - loop_start
+                sleep_time = target_frame_time - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
+            try:
+                writer.close()
+                if frame_count > 0 and current_video_path.exists():
+                    size_mb = round(current_video_path.stat().st_size / (1024 * 1024), 2)
+                    print(f"[{COMPUTER_NAME}] Finished {CHUNK_MINUTES}-min video clip: {video_filename} ({size_mb} MB)")
+                    upload_queue.put(str(current_video_path))
+            except Exception as e:
+                print(f"[{COMPUTER_NAME}] Error closing video writer: {e}")
+
 # ----------------- MAIN FLOW -----------------
 
 if __name__ == "__main__":
     print(f"=================================================")
     print(f"  ALBAYAN CCTV MONITOR CLIENT - [{COMPUTER_NAME}]")
-    print(f"  Interval: Screenshot every 5 minutes")
-    print(f"  Display: CCTV Quad Live Feed")
+    print(f"  Mode: Automatic Video Recording + CCTV Feed")
+    print(f"  Video Clips: Every {CHUNK_MINUTES} Minutes ({VIDEO_FPS} FPS)")
+    print(f"  Live Stream: CCTV Quad Grid (every {LIVE_INTERVAL}s)")
     print(f"=================================================")
     print(f"Initializing (10s startup delay)...")
     time.sleep(10)
 
     # Show warning popup
     show_recording_popup()
+
+    # Send Boot Notification to Telegram & Server
+    try:
+        srv = discover_server_url()
+        requests.post(
+            f"{srv}/api/client/boot_notify",
+            headers={"X-API-Secret": API_SECRET},
+            json={"computer_name": COMPUTER_NAME},
+            timeout=5
+        )
+    except Exception:
+        pass
 
     # Thread 1: Live CCTV frame stream (every 5 seconds)
     t_live = threading.Thread(target=live_cctv_worker, daemon=True)
@@ -420,5 +563,13 @@ if __name__ == "__main__":
     t_updater = threading.Thread(target=auto_updater_worker, daemon=True)
     t_updater.start()
 
-    # Thread 4 (Main thread): 5-minute screenshot recorder
-    five_minute_screenshot_worker()
+    # Thread 4: Background Video Uploader
+    t_uploader = threading.Thread(target=upload_worker, daemon=True)
+    t_uploader.start()
+
+    # Thread 5: 5-minute screenshot recorder (CCTV Timeline)
+    t_shot = threading.Thread(target=five_minute_screenshot_worker, daemon=True)
+    t_shot.start()
+
+    # Thread 6 (Main Thread): Video Recorder Worker
+    video_recorder_worker()

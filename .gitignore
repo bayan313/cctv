@@ -19,7 +19,6 @@ client/client_config.json
 server/.sessions.json
 
 # Setup scripts
-setup_startup.py
 cloudflared.exe
 *.exe
 
