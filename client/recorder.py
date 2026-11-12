@@ -363,14 +363,29 @@ def five_minute_screenshot_worker():
 # ----------------- 5. PING WORKER -----------------
 
 def ping_worker():
+    global LIVE_INTERVAL, SCREENSHOT_INTERVAL, VIDEO_RECORDING_ENABLED, VIDEO_FPS, CHUNK_MINUTES
     while True:
         try:
-            requests.post(
+            res = requests.post(
                 f"{SERVER_URL}/api/client/ping",
                 headers={"X-API-Secret": API_SECRET},
                 json={"computer_name": COMPUTER_NAME},
                 timeout=5
             )
+            if res.status_code == 200:
+                data = res.json()
+                c = data.get("config")
+                if c:
+                    if "video_fps" in c and int(c["video_fps"]) > 0:
+                        VIDEO_FPS = int(c["video_fps"])
+                    if "video_chunk_minutes" in c and int(c["video_chunk_minutes"]) > 0:
+                        CHUNK_MINUTES = int(c["video_chunk_minutes"])
+                    if "video_recording_enabled" in c:
+                        VIDEO_RECORDING_ENABLED = bool(c["video_recording_enabled"])
+                    if "live_stream_interval_seconds" in c and int(c["live_stream_interval_seconds"]) > 0:
+                        LIVE_INTERVAL = int(c["live_stream_interval_seconds"])
+                    if "screenshot_interval_seconds" in c and int(c["screenshot_interval_seconds"]) > 0:
+                        SCREENSHOT_INTERVAL = int(c["screenshot_interval_seconds"])
         except Exception:
             pass
         time.sleep(20)
@@ -440,13 +455,8 @@ def upload_worker():
         upload_queue.task_done()
 
 def video_recorder_worker():
-    """Records smooth screen video in 2-minute MP4 clips and uploads them."""
-    if not VIDEO_RECORDING_ENABLED:
-        print(f"[{COMPUTER_NAME}] Video recording disabled in config.")
-        while True:
-            time.sleep(60)
-
-    print(f"[{COMPUTER_NAME}] Screen Video Recorder active ({VIDEO_FPS} FPS, {CHUNK_MINUTES}-minute clips)...")
+    """Records smooth screen video in configurable MP4 clips and uploads them."""
+    print(f"[{COMPUTER_NAME}] Screen Video Recorder initialized ({VIDEO_FPS} FPS, {CHUNK_MINUTES}-min clips)...")
 
     # Enqueue any pending files from previous session
     for prev_file in TEMP_DIR.glob("*.mp4"):
@@ -462,11 +472,17 @@ def video_recorder_worker():
         width = (width // 16) * 16
         height = (height // 16) * 16
         capture_box = {"top": mon["top"], "left": mon["left"], "width": width, "height": height}
-
-        target_frame_time = 1.0 / VIDEO_FPS
         fallback_frame = np.zeros((height, width, 3), dtype=np.uint8)
 
         while True:
+            if not VIDEO_RECORDING_ENABLED:
+                time.sleep(5)
+                continue
+
+            current_fps = max(1, min(60, VIDEO_FPS))
+            current_chunk_min = max(1, CHUNK_MINUTES)
+            target_frame_time = 1.0 / current_fps
+
             timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
             video_filename = f"[{COMPUTER_NAME}]_{timestamp_str}.mp4"
             current_video_path = TEMP_DIR / video_filename
@@ -474,7 +490,7 @@ def video_recorder_worker():
             try:
                 writer = imageio.get_writer(
                     str(current_video_path),
-                    fps=VIDEO_FPS,
+                    fps=current_fps,
                     codec="libx264",
                     quality=6,
                     pixelformat="yuv420p",
@@ -487,10 +503,10 @@ def video_recorder_worker():
                 continue
 
             chunk_start_time = time.time()
-            chunk_end_time = chunk_start_time + (CHUNK_MINUTES * 60)
+            chunk_end_time = chunk_start_time + (current_chunk_min * 60)
             frame_count = 0
 
-            while time.time() < chunk_end_time:
+            while time.time() < chunk_end_time and VIDEO_RECORDING_ENABLED:
                 loop_start = time.time()
                 try:
                     raw_frame = np.array(sct.grab(capture_box))

@@ -278,6 +278,57 @@ def logout(response: Response, session_token: Optional[str] = Depends(cookie_sch
     response.delete_cookie("session_token", path="/")
     return {"ok": True}
 
+@app.get("/api/settings")
+def get_settings(session: str = Depends(verify_session)):
+    cfg_file = ROOT_DIR / "config.json"
+    cfg = {}
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {
+        "retention_hours": cfg.get("retention_hours", 24),
+        "video_fps": cfg.get("video_fps", 10),
+        "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
+        "send_videos_to_telegram": cfg.get("send_videos_to_telegram", True),
+        "video_recording_enabled": cfg.get("video_recording_enabled", True),
+        "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 5),
+        "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300),
+        "admin_password": ADMIN_PASSWORD
+    }
+
+@app.post("/api/settings")
+def update_settings(payload: dict, session: str = Depends(verify_session)):
+    cfg_file = ROOT_DIR / "config.json"
+    cfg = {}
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if "retention_hours" in payload:
+        cfg["retention_hours"] = max(1, int(payload["retention_hours"]))
+    if "video_fps" in payload:
+        cfg["video_fps"] = max(1, min(60, int(payload["video_fps"])))
+    if "video_chunk_minutes" in payload:
+        cfg["video_chunk_minutes"] = max(1, min(60, int(payload["video_chunk_minutes"])))
+    if "send_videos_to_telegram" in payload:
+        cfg["send_videos_to_telegram"] = bool(payload["send_videos_to_telegram"])
+    if "video_recording_enabled" in payload:
+        cfg["video_recording_enabled"] = bool(payload["video_recording_enabled"])
+    if "live_stream_interval_seconds" in payload:
+        cfg["live_stream_interval_seconds"] = max(1, min(60, int(payload["live_stream_interval_seconds"])))
+    if "screenshot_interval_seconds" in payload:
+        cfg["screenshot_interval_seconds"] = max(10, min(3600, int(payload["screenshot_interval_seconds"])))
+    if "admin_password" in payload and payload["admin_password"]:
+        cfg["admin_password"] = str(payload["admin_password"]).strip()
+    try:
+        cfg_file.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    return {"ok": True, "message": "Settings updated successfully"}
+
 # ----------------- CCTV IMAGE & STREAM API -----------------
 
 @app.get("/api/live/{computer_name}")
@@ -479,7 +530,23 @@ def client_ping(payload: dict, x_api_secret: Optional[str] = Header(None)):
         raise HTTPException(status_code=403, detail="Invalid API Secret")
     name = normalize_pc_name(payload.get("computer_name", "albayan 1"))
     client_pings[name] = time.time()
-    return {"status": "pong"}
+    cfg_file = ROOT_DIR / "config.json"
+    cfg = {}
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {
+        "status": "pong",
+        "config": {
+            "video_fps": cfg.get("video_fps", 10),
+            "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
+            "video_recording_enabled": cfg.get("video_recording_enabled", True),
+            "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 5),
+            "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300)
+        }
+    }
 
 @app.post("/api/client/register")
 def client_register(payload: dict):
