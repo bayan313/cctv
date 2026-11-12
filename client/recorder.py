@@ -199,48 +199,75 @@ def capture_desktop_image():
 
     return None
 
-# ----------------- 2. POPUP NOTIFICATION (OVERT) -----------------
+# ----------------- 2. POPUP NOTIFICATION (OVERT CENTER TYPEWRITER) -----------------
 
 def show_recording_popup():
+    """
+    Displays an overt centered notification when PC powers on / starts up:
+    Types out: "● SCREEN RECORDING STARTED" in the exact CENTER of the screen,
+    pauses for a few seconds, then automatically closes and continues running in the background.
+    """
     try:
         import tkinter as tk
 
         root = tk.Tk()
-        root.title("Albayan Study Monitor")
+        root.title("Screen Recording Active")
         root.attributes("-topmost", True)
         root.overrideredirect(True)
 
-        screen_width = root.winfo_screenwidth()
-        w = 540
-        h = 140
-        x = (screen_width - w) // 2
-        y = 35
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        w, h = 560, 160
+        x = max(0, (screen_w - w) // 2)
+        y = max(0, (screen_h - h) // 2)
         root.geometry(f"{w}x{h}+{x}+{y}")
-        root.configure(bg="#0f172a")
+        root.configure(bg="#020617")
 
-        frame = tk.Frame(root, bg="#1e293b", highlightbackground="#6366f1", highlightthickness=2, padx=16, pady=12)
+        frame = tk.Frame(root, bg="#0f172a", highlightbackground="#ef4444", highlightthickness=2.5, padx=24, pady=20)
         frame.pack(fill="both", expand=True)
 
         header_lbl = tk.Label(
             frame,
-            text=f"⚠️  [{COMPUTER_NAME.upper()}] CCTV MONITORING ACTIVE",
-            font=("Segoe UI", 12, "bold"),
-            fg="#f87171",
-            bg="#1e293b"
+            text=f"[{COMPUTER_NAME.upper()}] CCTV MONITOR ACTIVE",
+            font=("Segoe UI", 9, "bold"),
+            fg="#94a3b8",
+            bg="#0f172a"
         )
-        header_lbl.pack(anchor="w")
+        header_lbl.pack(anchor="center", pady=(0, 4))
 
-        msg_lbl = tk.Label(
+        # Centered text that types out
+        type_lbl = tk.Label(
             frame,
-            text=f"This computer ({COMPUTER_NAME}) is under screen monitoring.\nസ്ക്രീൻ റെക്കോർഡിംഗ് ആരംഭിച്ചിരിക്കുന്നു (5-min snapshots active).",
-            font=("Segoe UI", 10),
-            fg="#cbd5e1",
-            bg="#1e293b",
-            justify="left"
+            text="",
+            font=("Consolas", 18, "bold"),
+            fg="#ef4444",
+            bg="#0f172a"
         )
-        msg_lbl.pack(anchor="w", pady=(4, 0))
+        type_lbl.pack(anchor="center", pady=(0, 6))
 
-        root.after(7000, root.destroy)
+        sub_lbl = tk.Label(
+            frame,
+            text="This computer is under screen monitoring. Recording in progress.",
+            font=("Segoe UI", 9),
+            fg="#64748b",
+            bg="#0f172a"
+        )
+        sub_lbl.pack(anchor="center")
+
+        full_text = "● SCREEN RECORDING STARTED"
+        current_idx = 0
+
+        def type_step():
+            nonlocal current_idx
+            if current_idx < len(full_text):
+                current_idx += 1
+                type_lbl.config(text=full_text[:current_idx])
+                root.after(45, type_step)
+            else:
+                # Keep visible for 3 seconds then close and stay running in background
+                root.after(3000, root.destroy)
+
+        root.after(150, type_step)
         root.mainloop()
     except Exception as e:
         print(f"[Popup] Notice: {e}")

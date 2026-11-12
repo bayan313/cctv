@@ -7,6 +7,8 @@ import time
 import socket
 import asyncio
 import secrets
+import hmac
+import hashlib
 import zipfile
 import subprocess
 from pathlib import Path
@@ -119,10 +121,43 @@ active_sessions = load_sessions()
 active_computers: Dict[str, Dict[str, Any]] = {}
 last_cleanup_time = 0
 
+SESSION_HMAC_SECRET = "secure_study_monitor_secret_key_8899"
+
+def create_session_token() -> str:
+    ts = str(int(time.time()))
+    nonce = secrets.token_hex(8)
+    cfg = load_config()
+    pw = cfg.get("admin_password", "albayan@2026")
+    msg = f"{ts}:{nonce}:{pw}"
+    sig = hmac.new(SESSION_HMAC_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return f"{ts}.{nonce}.{sig}"
+
+def is_valid_session_token(token: Optional[str]) -> bool:
+    if not token or not isinstance(token, str):
+        return False
+    if token in active_sessions:
+        return True
+    parts = token.split(".")
+    if len(parts) != 3:
+        return False
+    ts, nonce, sig = parts
+    try:
+        created = int(ts)
+        # 30-day persistent session
+        if time.time() - created > 86400 * 30 or created > time.time() + 300:
+            return False
+    except ValueError:
+        return False
+    cfg = load_config()
+    pw = cfg.get("admin_password", "albayan@2026")
+    msg = f"{ts}:{nonce}:{pw}"
+    expected_sig = hmac.new(SESSION_HMAC_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected_sig)
+
 cookie_scheme = APIKeyCookie(name="session_token", auto_error=False)
 
 def verify_session(session_token: Optional[str] = Depends(cookie_scheme)):
-    if not session_token or session_token not in active_sessions:
+    if not session_token or not is_valid_session_token(session_token):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return session_token
 
@@ -916,20 +951,23 @@ def get_system_status(session: str = Depends(verify_session)):
 
 @app.post("/api/login")
 @app.post("/login")
-def login(payload: dict, response: Response):
+def login(payload: dict, request: Request, response: Response):
     password = payload.get("password")
     cfg = load_config()
     expected_password = cfg.get("admin_password", "albayan@2026")
     if password == expected_password:
-        token = secrets.token_hex(24)
+        token = create_session_token()
         active_sessions.add(token)
         save_sessions(active_sessions)
+        is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
         response.set_cookie(
             key="session_token",
             value=token,
+            path="/",
             httponly=True,
-            max_age=86400 * 7,
-            samesite="lax"
+            max_age=86400 * 30,
+            samesite="lax",
+            secure=is_https
         )
         return {"ok": True, "token": token}
     raise HTTPException(status_code=401, detail="Invalid password")
@@ -940,7 +978,7 @@ def logout(response: Response, session_token: Optional[str] = Depends(cookie_sch
     if session_token in active_sessions:
         active_sessions.discard(session_token)
         save_sessions(active_sessions)
-    response.delete_cookie("session_token")
+    response.delete_cookie("session_token", path="/")
     return {"ok": True}
 
 # ----------------- WEB PAGES (CCTV INTERFACE) -----------------
@@ -953,7 +991,7 @@ def logout(response: Response, session_token: Optional[str] = Depends(cookie_sch
 @app.get("/cctv", response_class=HTMLResponse)
 @app.get("/index.html", response_class=HTMLResponse)
 def index_page(request: Request, session_token: Optional[str] = Depends(cookie_scheme)):
-    if not session_token or session_token not in active_sessions:
+    if not session_token or not is_valid_session_token(session_token):
         return get_login_html()
     return get_cctv_dashboard_html()
 
@@ -1616,7 +1654,7 @@ async def custom_404_handler(request: Request, exc):
     if path.startswith("/api/") and not any(path.startswith(p) for p in ["/api/login", "/api/logout", "/api/download"]):
         return JSONResponse(status_code=404, content={"detail": f"Route {path} not found"})
     token = request.cookies.get("session_token")
-    if token and token in active_sessions:
+    if token and is_valid_session_token(token):
         return HTMLResponse(get_cctv_dashboard_html())
     return HTMLResponse(get_login_html())
 

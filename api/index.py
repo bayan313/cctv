@@ -3,6 +3,8 @@ import os
 import json
 import time
 import secrets
+import hmac
+import hashlib
 import sys
 from pathlib import Path
 from typing import Optional
@@ -33,6 +35,38 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9287027030:AAFeB2BZyF9G87R
 API_SECRET = os.getenv("API_SECRET", "secure_study_monitor_secret_key_8899")
 DEFAULT_PC_NAMES = ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]
 
+def create_session_token() -> str:
+    ts = str(int(time.time()))
+    nonce = secrets.token_hex(8)
+    msg = f"{ts}:{nonce}:{ADMIN_PASSWORD}"
+    sig = hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return f"{ts}.{nonce}.{sig}"
+
+def is_valid_session_token(token: Optional[str]) -> bool:
+    if not token or not isinstance(token, str):
+        return False
+    if token in active_sessions:
+        return True
+    parts = token.split(".")
+    if len(parts) != 3:
+        return False
+    ts, nonce, sig = parts
+    try:
+        created = int(ts)
+        # 30-day persistent session
+        if time.time() - created > 86400 * 30 or created > time.time() + 300:
+            return False
+    except ValueError:
+        return False
+    msg = f"{ts}:{nonce}:{ADMIN_PASSWORD}"
+    expected_sig = hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected_sig)
+
+def verify_session(session_token: Optional[str] = Depends(cookie_scheme)):
+    if not session_token or not is_valid_session_token(session_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return session_token
+
 # Storage in /tmp for serverless runtime
 TMP_DIR = Path("/tmp") if os.name != "nt" else (ROOT_DIR / "server" / "recordings")
 TMP_RECORDINGS = TMP_DIR / "recordings"
@@ -57,16 +91,13 @@ def normalize_pc_name(name: str) -> str:
     return clean
 
 def get_upstream_url(request: Optional[Request] = None) -> Optional[str]:
-    # 1. Check environment variables
     env_url = os.getenv("LIVE_SERVER_URL") or os.getenv("PUBLIC_SERVER_URL")
     if env_url:
         return env_url.rstrip("/")
-    # 2. Check cookie if passed
     if request:
         cookie_bridge = request.cookies.get("cctv_bridge_url")
         if cookie_bridge and cookie_bridge.startswith("http"):
             return cookie_bridge.rstrip("/")
-    # 3. Check config.json if present
     try:
         cfg_file = ROOT_DIR / "config.json"
         if cfg_file.exists():
@@ -78,11 +109,6 @@ def get_upstream_url(request: Optional[Request] = None) -> Optional[str]:
     except Exception:
         pass
     return None
-
-def verify_session(session_token: Optional[str] = Depends(cookie_scheme)):
-    if not session_token or session_token not in active_sessions:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return session_token
 
 @app.middleware("http")
 async def vercel_path_normalizer(request: Request, call_next):
@@ -189,29 +215,32 @@ def get_html_login():
 @app.get("/dashboard", response_class=HTMLResponse)
 @app.get("/cctv", response_class=HTMLResponse)
 def index_page(request: Request, session_token: Optional[str] = Depends(cookie_scheme)):
-    if not session_token or session_token not in active_sessions:
+    if not session_token or not is_valid_session_token(session_token):
         return get_html_login()
     return get_html_dashboard()
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(session_token: Optional[str] = Depends(cookie_scheme)):
-    if session_token and session_token in active_sessions:
+    if session_token and is_valid_session_token(session_token):
         return get_html_dashboard()
     return get_html_login()
 
 @app.post("/api/login")
 @app.post("/login")
-def login(payload: dict, response: Response):
+def login(payload: dict, request: Request, response: Response):
     password = payload.get("password")
     if password == ADMIN_PASSWORD:
-        token = secrets.token_hex(24)
+        token = create_session_token()
         active_sessions.add(token)
+        is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
         response.set_cookie(
             key="session_token",
             value=token,
+            path="/",
             httponly=True,
-            max_age=86400 * 7,
-            samesite="lax"
+            max_age=86400 * 30,
+            samesite="lax",
+            secure=is_https
         )
         return {"ok": True, "token": token}
     raise HTTPException(status_code=401, detail="Invalid password")
@@ -221,7 +250,7 @@ def login(payload: dict, response: Response):
 def logout(response: Response, session_token: Optional[str] = Depends(cookie_scheme)):
     if session_token in active_sessions:
         active_sessions.discard(session_token)
-    response.delete_cookie("session_token")
+    response.delete_cookie("session_token", path="/")
     return {"ok": True}
 
 # ----------------- CCTV IMAGE & STREAM API -----------------
@@ -468,6 +497,6 @@ async def custom_404_handler(request: Request, exc):
     if path.startswith("/api/") and not any(path.startswith(p) for p in ["/api/login", "/api/logout", "/api/download"]):
         return JSONResponse(status_code=404, content={"detail": f"Route {path} not found"})
     token = request.cookies.get("session_token")
-    if token and token in active_sessions:
+    if token and is_valid_session_token(token):
         return HTMLResponse(get_html_dashboard())
     return HTMLResponse(get_html_login())
