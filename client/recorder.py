@@ -53,7 +53,7 @@ def get_machine_id():
         return socket.gethostname()
 
 def discover_server_url():
-    candidates = ["http://127.0.0.1:8899", "http://192.168.1.3:8899"]
+    candidates = ["http://127.0.0.1:8899", "http://192.168.1.2:8899", "http://192.168.1.3:8899"]
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:

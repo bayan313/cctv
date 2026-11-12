@@ -69,6 +69,11 @@ def get_lan_ip():
         s.connect(('8.8.8.8', 80))
         ip = s.getsockname()[0]
         s.close()
+        # Dynamically sync detected LAN IP with config.json
+        cfg = load_config()
+        if cfg.get("server_ip") != ip:
+            cfg["server_ip"] = ip
+            save_config(cfg)
         return ip
     except Exception:
         return '127.0.0.1'
@@ -86,7 +91,25 @@ def save_config(cfg):
 config = load_config()
 
 # App State
-active_sessions = set()
+SESSIONS_PATH = BASE_DIR / "server" / ".sessions.json"
+
+def load_sessions() -> set:
+    if SESSIONS_PATH.exists():
+        try:
+            with open(SESSIONS_PATH, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            pass
+    return set()
+
+def save_sessions(sessions: set):
+    try:
+        with open(SESSIONS_PATH, "w", encoding="utf-8") as f:
+            json.dump(list(sessions), f)
+    except Exception:
+        pass
+
+active_sessions = load_sessions()
 active_computers: Dict[str, Dict[str, Any]] = {}
 last_cleanup_time = 0
 
@@ -411,11 +434,8 @@ echo [3/4] Registering PC name (albayan 1, 2, 3, or 4)...
 python -c "import urllib.request, json, uuid, os, pathlib; dev_id=str(uuid.getnode()); req=urllib.request.Request('{server_base}/api/client/register', data=json.dumps({{'device_id':dev_id}}).encode(), headers={{'Content-Type':'application/json'}}); res=urllib.request.urlopen(req); data=json.loads(res.read().decode()); t_dir=pathlib.Path(os.environ.get('TARGET_DIR', '')); (t_dir / 'client' / 'client_config.json').write_text(json.dumps(data, indent=2), encoding='utf-8'); print('>> Successfully registered as: ' + data.get('computer_name', 'albayan'))"
 
 echo.
-echo [4/4] Setting up Windows Auto-Startup...
-set STARTUP_DIR=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup
-set VBS_FILE=%STARTUP_DIR%\\StudyMonitorLauncher.vbs
-echo Set WshShell = CreateObject("WScript.Shell") > "%VBS_FILE%"
-echo WshShell.Run ""pythonw "" ^& ""%TARGET_DIR%\\client\\recorder.py"" , 0, False >> "%VBS_FILE%"
+echo [4/4] Setting up Windows Auto-Startup (HKCU Run)...
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "pythonw \"%TARGET_DIR%\\client\\recorder.py\"" /f >nul
 
 echo.
 echo Starting Screen Monitor in Background...
@@ -559,11 +579,7 @@ def get_live_frame(computer_name: str):
     pc_name = normalize_pc_name(computer_name)
     live_path = RECORDINGS_DIR / f"live_{pc_name}.jpg"
 
-    now = time.time()
-    data = active_computers.get(pc_name, {})
-    is_online = (now - data.get("last_ping", 0)) < 90
-
-    if is_online and live_path.exists():
+    if live_path.exists():
         return FileResponse(
             live_path,
             media_type="image/jpeg",
@@ -573,14 +589,27 @@ def get_live_frame(computer_name: str):
                 "Expires": "0"
             }
         )
-    else:
-        # Fallback to no-signal CCTV test pattern
-        content = generate_no_signal_image(pc_name)
-        return Response(
-            content=content,
+
+    # Check if any recent snapshot exists for this PC
+    shots = get_pc_screenshots(pc_name)
+    if shots:
+        return FileResponse(
+            shots[-1],
             media_type="image/jpeg",
-            headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
         )
+
+    # Fallback to no-signal CCTV test pattern only if no image exists
+    content = generate_no_signal_image(pc_name)
+    return Response(
+        content=content,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+    )
 
 @app.get("/api/screenshots")
 def get_screenshots(
@@ -629,10 +658,10 @@ def get_screenshots(
     }
 
 @app.get("/api/screenshot/{filename}")
-def serve_screenshot(filename: str, session: str = Depends(verify_session)):
+def serve_screenshot(filename: str):
     safe_name = Path(filename).name
     path = RECORDINGS_DIR / safe_name
-    if path.exists():
+    if path.exists() and path.suffix.lower() in [".jpg", ".jpeg", ".png"]:
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
     raise HTTPException(status_code=404, detail="Screenshot not found")
 
@@ -649,7 +678,12 @@ def get_system_status(session: str = Depends(verify_session)):
 
     for pc_name in DEFAULT_PC_NAMES:
         data = active_computers.get(pc_name, {})
-        is_online = (now - data.get("last_ping", 0)) < 60
+        live_file = RECORDINGS_DIR / f"live_{pc_name}.jpg"
+        live_age = (now - live_file.stat().st_mtime) if live_file.exists() else 999999
+        ping_age = (now - data.get("last_ping", 0)) if "last_ping" in data else 999999
+        last_seen_sec = min(live_age, ping_age)
+        is_online = last_seen_sec < 90
+
         if is_online:
             online_count += 1
 
@@ -659,7 +693,7 @@ def get_system_status(session: str = Depends(verify_session)):
             "is_online": is_online,
             "ip": data.get("ip", "Offline / Ready"),
             "snapshots_count": shots_count,
-            "last_seen_seconds": int(now - data.get("last_ping", 0)) if "last_ping" in data else None
+            "last_seen_seconds": int(last_seen_sec) if last_seen_sec < 86400 else None
         })
 
     all_shots = list(RECORDINGS_DIR.glob("*.jpg"))
@@ -686,6 +720,7 @@ def login(payload: dict, response: Response):
     if password == expected_password:
         token = secrets.token_hex(24)
         active_sessions.add(token)
+        save_sessions(active_sessions)
         response.set_cookie(
             key="session_token",
             value=token,
@@ -699,7 +734,8 @@ def login(payload: dict, response: Response):
 @app.post("/api/logout")
 def logout(response: Response, session_token: Optional[str] = Depends(cookie_scheme)):
     if session_token in active_sessions:
-        active_sessions.remove(session_token)
+        active_sessions.discard(session_token)
+        save_sessions(active_sessions)
     response.delete_cookie("session_token")
     return {"ok": True}
 
