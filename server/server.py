@@ -699,6 +699,12 @@ echo [OK] Silent runner:  !PYW_EXE!
 echo.
 echo [2/4] Downloading latest CCTV monitoring client...
 powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{server_base}/api/download/recorder.py', '%TARGET_DIR%\\client\\recorder.py')"
+(
+    echo {{
+    echo   "server_url": "{server_base}",
+    echo   "api_secret": "secure_study_monitor_secret_key_8899"
+    echo }}
+) > "%TARGET_DIR%\\client\\config.json"
 
 echo.
 echo [3/4] Installing necessary libraries (mss, pillow, requests, numpy, imageio)...

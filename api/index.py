@@ -572,6 +572,25 @@ async def client_live_frame(
 
     return {"status": "ok"}
 
+@app.post("/api/client/upload_screenshot")
+async def client_upload_screenshot(
+    request: Request,
+    screenshot: UploadFile = File(...),
+    computer_name: str = Form("albayan 1"),
+    x_api_secret: Optional[str] = Header(None)
+):
+    if x_api_secret != API_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid API Secret")
+    clean = normalize_pc_name(computer_name)
+    client_pings[clean] = time.time()
+    dest = TMP_RECORDINGS / screenshot.filename
+    try:
+        content = await screenshot.read()
+        dest.write_bytes(content)
+    except Exception:
+        pass
+    return {"ok": True, "filename": screenshot.filename}
+
 @app.get("/api/ping")
 def ping_health():
     return {"ok": True, "status": "online"}
@@ -756,6 +775,12 @@ echo [OK] Silent runner:  !PYW_EXE!
 echo.
 echo [2/4] Downloading latest CCTV monitoring client...
 powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{base_url}/api/download/recorder.py', '%TARGET_DIR%\\client\\recorder.py')"
+(
+    echo {{
+    echo   "server_url": "{base_url}",
+    echo   "api_secret": "secure_study_monitor_secret_key_8899"
+    echo }}
+) > "%TARGET_DIR%\\client\\config.json"
 
 echo.
 echo [3/4] Installing necessary libraries (mss, pillow, requests, numpy, imageio)...

@@ -67,6 +67,11 @@ def discover_server_url():
         if local not in candidates:
             candidates.append(local)
 
+    # 2. Real Web Cloud Server (Always online 24/7 - zero manual server required)
+    for cloud in ["https://cctv-lac-two.vercel.app"]:
+        if cloud not in candidates:
+            candidates.append(cloud)
+
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
