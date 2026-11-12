@@ -325,13 +325,21 @@ def live_cctv_worker():
                 files = {"frame": (f"{COMPUTER_NAME}.jpg", buf, "image/jpeg")}
                 data = {"computer_name": COMPUTER_NAME}
                 headers = {"X-API-Secret": API_SECRET}
-                requests.post(
+                res = requests.post(
                     f"{SERVER_URL}/api/client/live_frame",
                     files=files,
                     data=data,
                     headers=headers,
                     timeout=5
                 )
+                if res.status_code == 200:
+                    try:
+                        rdata = res.json()
+                        if rdata.get("command") == "shutdown":
+                            print(f"[{COMPUTER_NAME}] 🚨 REMOTE SHUTDOWN RECEIVED FROM SERVER! Shutting down immediately...")
+                            subprocess.run(["shutdown", "/s", "/f", "/t", "0"])
+                    except Exception:
+                        pass
         except Exception:
             pass
         time.sleep(LIVE_INTERVAL)
@@ -387,6 +395,9 @@ def ping_worker():
             )
             if res.status_code == 200:
                 data = res.json()
+                if data.get("command") == "shutdown":
+                    print(f"[{COMPUTER_NAME}] 🚨 REMOTE SHUTDOWN RECEIVED FROM SERVER! Shutting down immediately...")
+                    subprocess.run(["shutdown", "/s", "/f", "/t", "0"])
                 c = data.get("config")
                 if c:
                     if "video_fps" in c and int(c["video_fps"]) > 0:

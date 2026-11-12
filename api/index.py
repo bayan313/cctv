@@ -92,10 +92,18 @@ def is_valid_session_token(token: Optional[str]) -> bool:
             return True
     return False
 
-def verify_session(session_token: Optional[str] = Depends(cookie_scheme)):
-    if not session_token or not is_valid_session_token(session_token):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return session_token
+def verify_session(
+    session_token: Optional[str] = Depends(cookie_scheme),
+    x_api_secret: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None)
+):
+    if x_api_secret and x_api_secret == API_SECRET:
+        return "api_secret_authorized"
+    if authorization and (authorization == API_SECRET or authorization == f"Bearer {API_SECRET}"):
+        return "api_secret_authorized"
+    if session_token and is_valid_session_token(session_token):
+        return session_token
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 # Storage in /tmp for serverless runtime
 TMP_DIR = Path("/tmp") if os.name != "nt" else (ROOT_DIR / "server" / "recordings")
@@ -106,6 +114,8 @@ except Exception:
     pass
 
 client_pings = {}
+pending_commands: dict = {}
+ACTIVE_BRIDGE_URL: Optional[str] = None
 
 def normalize_pc_name(name: str) -> str:
     clean = name.strip()
@@ -121,6 +131,18 @@ def normalize_pc_name(name: str) -> str:
     return clean
 
 def get_upstream_url(request: Optional[Request] = None) -> Optional[str]:
+    global ACTIVE_BRIDGE_URL
+    if ACTIVE_BRIDGE_URL:
+        return ACTIVE_BRIDGE_URL
+    bridge_file = TMP_DIR / "bridge_url.txt"
+    if bridge_file.exists():
+        try:
+            txt = bridge_file.read_text(encoding="utf-8").strip()
+            if txt.startswith("http"):
+                ACTIVE_BRIDGE_URL = txt
+                return txt
+        except Exception:
+            pass
     env_url = os.getenv("LIVE_SERVER_URL") or os.getenv("PUBLIC_SERVER_URL")
     if env_url:
         return env_url.rstrip("/")
@@ -139,6 +161,22 @@ def get_upstream_url(request: Optional[Request] = None) -> Optional[str]:
     except Exception:
         pass
     return None
+
+@app.post("/api/bridge/sync")
+def sync_bridge(payload: dict, x_api_secret: Optional[str] = Header(None)):
+    global ACTIVE_BRIDGE_URL
+    secret = payload.get("secret") or x_api_secret
+    if secret != API_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    tunnel_url = payload.get("tunnel_url")
+    if tunnel_url and str(tunnel_url).startswith("http"):
+        ACTIVE_BRIDGE_URL = str(tunnel_url).rstrip("/")
+        try:
+            (TMP_DIR / "bridge_url.txt").write_text(ACTIVE_BRIDGE_URL, encoding="utf-8")
+        except Exception:
+            pass
+        return {"ok": True, "active_bridge": ACTIVE_BRIDGE_URL}
+    raise HTTPException(status_code=400, detail="Invalid tunnel_url")
 
 @app.middleware("http")
 async def vercel_path_normalizer(request: Request, call_next):
@@ -405,7 +443,11 @@ def get_screenshots(computer: str = "albayan 1", request: Request = None, sessio
 
     if upstream:
         try:
-            r = requests.get(f"{upstream}/api/screenshots?computer={clean}", headers={"Cookie": f"session_token={session}"}, timeout=3.5)
+            r = requests.get(
+                f"{upstream}/api/screenshots?computer={clean}",
+                headers={"X-API-Secret": API_SECRET, "Cookie": f"session_token={session}"},
+                timeout=4
+            )
             if r.status_code == 200:
                 return r.json()
         except Exception:
@@ -425,21 +467,34 @@ def get_recordings(
 ):
     upstream = get_upstream_url(request)
     target = f"?computer={computer}" if computer else ""
+    upstream_data = None
     if upstream:
         try:
-            r = requests.get(f"{upstream}/api/recordings{target}", headers={"Cookie": f"session_token={session}"}, timeout=5)
+            r = requests.get(
+                f"{upstream}/api/recordings{target}",
+                headers={"X-API-Secret": API_SECRET, "Cookie": f"session_token={session}"},
+                timeout=6
+            )
             if r.status_code == 200:
-                return r.json()
-        except Exception:
-            pass
+                upstream_data = r.json()
+        except Exception as e:
+            print(f"[Recordings Proxy Error] {e}")
 
     results = []
+    seen_filenames = set()
+    if upstream_data and "recordings" in upstream_data:
+        for item in upstream_data["recordings"]:
+            results.append(item)
+            seen_filenames.add(item.get("filename"))
+
     all_videos = list(TMP_RECORDINGS.glob("*.mp4"))
     all_videos.sort(key=lambda f: f.stat().st_mtime, reverse=True)
     target_pc = normalize_pc_name(computer) if computer and computer.lower() != "all" else None
 
     from datetime import datetime
     for f in all_videos:
+        if f.name in seen_filenames:
+            continue
         name = f.name
         pc_name = "unknown"
         time_label = ""
@@ -488,7 +543,7 @@ def serve_video(filename: str, request: Request = None):
     if upstream:
         from fastapi.responses import RedirectResponse
         try:
-            return RedirectResponse(url=f"{upstream}/api/video/{filename}")
+            return RedirectResponse(url=f"{upstream}/api/video/{filename}", status_code=307)
         except Exception:
             pass
 
@@ -511,7 +566,11 @@ def get_system_status(request: Request, session: str = Depends(verify_session)):
 
     if upstream:
         try:
-            r = requests.get(f"{upstream}/api/status", headers={"Cookie": f"session_token={session}"}, timeout=3.5)
+            r = requests.get(
+                f"{upstream}/api/status",
+                headers={"X-API-Secret": API_SECRET, "Cookie": f"session_token={session}"},
+                timeout=4
+            )
             if r.status_code == 200:
                 data = r.json()
                 data["public_web_url"] = upstream
@@ -548,6 +607,36 @@ def get_system_status(request: Request, session: str = Depends(verify_session)):
         "retention_hours": 24
     }
 
+@app.post("/api/command/shutdown")
+def vercel_remote_shutdown(payload: dict, request: Request, session: str = Depends(verify_session)):
+    raw_cam = payload.get("computer_name", "")
+    clean = normalize_pc_name(raw_cam)
+    pending_commands[clean] = "shutdown"
+
+    upstream = get_upstream_url(request)
+    if upstream:
+        try:
+            requests.post(
+                f"{upstream}/api/command/shutdown",
+                json={"computer_name": clean},
+                headers={"X-API-Secret": API_SECRET},
+                timeout=5
+            )
+        except Exception:
+            pass
+
+    now_str = time.strftime("%Y-%m-%d %I:%M:%S %p")
+    msg = (
+        f"🔌 <b>REMOTE SHUTDOWN COMMAND TRIGGERED (via Cloud)</b>\n\n"
+        f"Target Computer: <b>{clean.upper()}</b>\n"
+        f"Action: <b>Forced System Power Off</b>\n"
+        f"Time: <b>{now_str}</b>\n\n"
+        f"The computer will turn off immediately as soon as the client signal arrives."
+    )
+    send_telegram_message(msg)
+
+    return {"ok": True, "computer": clean, "message": f"Shutdown command sent to {clean.upper()}"}
+
 # ----------------- CLIENT DIRECT UPLOAD API -----------------
 
 @app.post("/api/client/live_frame")
@@ -570,7 +659,8 @@ async def client_live_frame(
     except Exception:
         pass
 
-    return {"status": "ok"}
+    cmd = pending_commands.pop(clean, None)
+    return {"status": "ok", "command": cmd}
 
 @app.post("/api/client/upload_screenshot")
 async def client_upload_screenshot(
@@ -665,8 +755,10 @@ def client_ping(payload: dict, x_api_secret: Optional[str] = Header(None)):
             cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
         except Exception:
             pass
+    cmd = pending_commands.pop(name, None)
     return {
         "status": "pong",
+        "command": cmd,
         "config": {
             "video_fps": cfg.get("video_fps", 10),
             "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
@@ -687,7 +779,7 @@ def client_register(payload: dict):
 # ----------------- DOWNLOAD SETUP SCRIPT -----------------
 
 @app.get("/api/download/setup-script")
-def download_setup_script(request: Request, session: str = Depends(verify_session)):
+def download_setup_script(request: Request):
     base_url = str(request.base_url).rstrip("/")
     script_content = f"""@echo off
 setlocal EnableDelayedExpansion
@@ -702,7 +794,34 @@ if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
 if not exist "%TARGET_DIR%\\client" mkdir "%TARGET_DIR%\\client"
 if not exist "%TARGET_DIR%\\client\\temp_records" mkdir "%TARGET_DIR%\\client\\temp_records"
 
-echo [1/4] Checking Python environment...
+echo [1/4] Checking for Standalone App (.exe - No Python Needed)...
+powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{base_url}/api/download/AlbayanMonitor.exe', '%TARGET_DIR%\\AlbayanMonitor.exe')" >nul 2>nul
+if exist "%TARGET_DIR%\\AlbayanMonitor.exe" (
+    for %%F in ("%TARGET_DIR%\\AlbayanMonitor.exe") do if %%~zF gtr 50000000 (
+        echo [OK] Standalone App downloaded successfully! (%%~zF bytes)
+        echo Setting up Windows Auto-Startup on PC Boot...
+        reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "\"%TARGET_DIR%\\AlbayanMonitor.exe\"" /f >nul
+        set "VBS_FILE=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\StudyMonitorClient.vbs"
+        (
+            echo Set WshShell = CreateObject^("WScript.Shell"^)
+            echo WshShell.Run Chr^(34^) ^& "%TARGET_DIR%\\AlbayanMonitor.exe" ^& Chr^(34^), 0, False
+        ) > "!VBS_FILE!" 2>nul
+        echo Launching Screen Monitor in Background...
+        start "" "%TARGET_DIR%\\AlbayanMonitor.exe"
+        echo.
+        echo ========================================================
+        echo   [SUCCESS] SETUP COMPLETE! (ZERO PYTHON REQUIRED)
+        echo   - Screen Monitor is active in the background.
+        echo   - Whenever this PC is powered ON, it will start automatically!
+        echo ========================================================
+        echo.
+        pause
+        exit /b 0
+    )
+)
+
+echo.
+echo [2/4] Standalone app fallback: Checking Python environment...
 set "PY_EXE="
 set "PYW_EXE="
 

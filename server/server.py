@@ -121,6 +121,7 @@ def save_sessions(sessions: set):
 
 active_sessions = load_sessions()
 active_computers: Dict[str, Dict[str, Any]] = {}
+pending_commands: Dict[str, str] = {}
 last_cleanup_time = 0
 
 SESSION_HMAC_SECRET = "secure_study_monitor_secret_key_8899"
@@ -158,10 +159,20 @@ def is_valid_session_token(token: Optional[str]) -> bool:
 
 cookie_scheme = APIKeyCookie(name="session_token", auto_error=False)
 
-def verify_session(session_token: Optional[str] = Depends(cookie_scheme)):
-    if not session_token or not is_valid_session_token(session_token):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return session_token
+def verify_session(
+    session_token: Optional[str] = Depends(cookie_scheme),
+    x_api_secret: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None)
+):
+    cfg = load_config()
+    secret = cfg.get("api_secret", "secure_study_monitor_secret_key_8899")
+    if x_api_secret and x_api_secret == secret:
+        return "api_secret_authorized"
+    if authorization and (authorization == secret or authorization == f"Bearer {secret}"):
+        return "api_secret_authorized"
+    if session_token and is_valid_session_token(session_token):
+        return session_token
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 def send_telegram_message(text: str):
     cfg = load_config()
@@ -515,6 +526,16 @@ async def start_cloudflare_tunnel_task(app: FastAPI):
                     )
                     send_telegram_message(msg)
 
+                    # Sync URL to Vercel Cloud Portal
+                    try:
+                        requests.post(
+                            "https://cctv-lac-two.vercel.app/api/bridge/sync",
+                            json={"tunnel_url": public_url, "secret": "secure_study_monitor_secret_key_8899"},
+                            timeout=5
+                        )
+                    except Exception:
+                        pass
+
                     # Open browser
                     try:
                         webbrowser.open(public_url)
@@ -525,17 +546,35 @@ async def start_cloudflare_tunnel_task(app: FastAPI):
 
         await asyncio.sleep(5)
 
+async def periodic_bridge_sync_task():
+    """Periodically syncs Cloudflare Tunnel URL with Vercel Cloud node."""
+    while True:
+        try:
+            cfg = load_config()
+            pub = cfg.get("public_web_url")
+            if pub and pub.startswith("http"):
+                requests.post(
+                    "https://cctv-lac-two.vercel.app/api/bridge/sync",
+                    json={"tunnel_url": pub, "secret": "secure_study_monitor_secret_key_8899"},
+                    timeout=8
+                )
+        except Exception:
+            pass
+        await asyncio.sleep(45)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     t_tg = asyncio.create_task(telegram_bot_poller())
     t_clean = asyncio.create_task(auto_delete_old_files())
     t_up = asyncio.create_task(auto_updater_task())
     t_tunnel = asyncio.create_task(start_cloudflare_tunnel_task(app))
+    t_sync = asyncio.create_task(periodic_bridge_sync_task())
     yield
     t_tg.cancel()
     t_clean.cancel()
     t_up.cancel()
     t_tunnel.cancel()
+    t_sync.cancel()
     if hasattr(app.state, "tunnel_proc") and app.state.tunnel_proc:
         try:
             app.state.tunnel_proc.terminate()
@@ -598,7 +637,7 @@ def download_recorder_py():
     raise HTTPException(status_code=404, detail="recorder.py not found")
 
 @app.get("/api/download/setup-script")
-def download_setup_script(request: Request, session: str = Depends(verify_session)):
+def download_setup_script(request: Request):
     lan_ip = get_lan_ip()
     cfg = load_config()
     port = cfg.get("server_port", 8899)
@@ -626,7 +665,34 @@ if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
 if not exist "%TARGET_DIR%\\client" mkdir "%TARGET_DIR%\\client"
 if not exist "%TARGET_DIR%\\client\\temp_records" mkdir "%TARGET_DIR%\\client\\temp_records"
 
-echo [1/4] Checking Python environment...
+echo [1/4] Checking for Standalone App (.exe - No Python Needed)...
+powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{server_base}/api/download/AlbayanMonitor.exe', '%TARGET_DIR%\\AlbayanMonitor.exe')" >nul 2>nul
+if exist "%TARGET_DIR%\\AlbayanMonitor.exe" (
+    for %%F in ("%TARGET_DIR%\\AlbayanMonitor.exe") do if %%~zF gtr 50000000 (
+        echo [OK] Standalone App downloaded successfully! (%%~zF bytes)
+        echo Setting up Windows Auto-Startup on PC Boot...
+        reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "\"%TARGET_DIR%\\AlbayanMonitor.exe\"" /f >nul
+        set "VBS_FILE=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\StudyMonitorClient.vbs"
+        (
+            echo Set WshShell = CreateObject^("WScript.Shell"^)
+            echo WshShell.Run Chr^(34^) ^& "%TARGET_DIR%\\AlbayanMonitor.exe" ^& Chr^(34^), 0, False
+        ) > "!VBS_FILE!" 2>nul
+        echo Launching Screen Monitor in Background...
+        start "" "%TARGET_DIR%\\AlbayanMonitor.exe"
+        echo.
+        echo ========================================================
+        echo   [SUCCESS] SETUP COMPLETE! (ZERO PYTHON REQUIRED)
+        echo   - Screen Monitor is active in the background.
+        echo   - Whenever this PC is powered ON, it will start automatically!
+        echo ========================================================
+        echo.
+        pause
+        exit /b 0
+    )
+)
+
+echo.
+echo [2/4] Standalone app fallback: Checking Python environment...
 set "PY_EXE="
 set "PYW_EXE="
 
@@ -813,9 +879,11 @@ def client_ping(
         now_str = datetime.now().strftime("%I:%M:%S %p")
         send_telegram_message(f"🚨 <b>[{html.escape(pc_name.upper())}]</b> Turned ON and CCTV Screen Monitoring started at <b>{now_str}</b> (IP: <code>{client_ip}</code>).")
 
+    cmd = pending_commands.pop(pc_name, None)
     return {
         "ok": True,
         "status": "active",
+        "command": cmd,
         "config": {
             "video_fps": cfg.get("video_fps", 10),
             "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
@@ -850,7 +918,40 @@ async def client_live_frame(
         while chunk := await frame.read(1024 * 128):
             f.write(chunk)
 
-    return {"ok": True}
+    cmd = pending_commands.pop(pc_name, None)
+    return {"ok": True, "command": cmd}
+
+@app.post("/api/command/shutdown")
+def remote_shutdown(payload: dict, session: str = Depends(verify_session)):
+    raw_cam = payload.get("computer_name", "")
+    clean = normalize_pc_name(raw_cam)
+    pending_commands[clean] = "shutdown"
+
+    now_str = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+    msg = (
+        f"🔌 <b>REMOTE SHUTDOWN COMMAND TRIGGERED</b>\n\n"
+        f"Target Computer: <b>{html.escape(clean.upper())}</b>\n"
+        f"Action: <b>Forced Power Off</b>\n"
+        f"Time: <b>{now_str}</b>\n\n"
+        f"The computer will turn off immediately as soon as the client signal is acknowledged."
+    )
+    send_telegram_message(msg)
+
+    # If target is this host machine, initiate local shutdown
+    try:
+        host_name = socket.gethostname().lower()
+    except Exception:
+        host_name = ""
+    if clean.lower() in ["albayan 1", host_name]:
+        def _delayed_local_shutdown():
+            time.sleep(2)
+            try:
+                subprocess.run(["shutdown", "/s", "/f", "/t", "1"])
+            except Exception:
+                pass
+        threading.Thread(target=_delayed_local_shutdown, daemon=True).start()
+
+    return {"ok": True, "computer": clean, "message": f"Shutdown command dispatched for {clean.upper()}"}
 
 @app.post("/api/client/upload_screenshot")
 async def client_upload_screenshot(
@@ -1292,7 +1393,21 @@ def get_login_html():
       </button>
     </form>
 
-    <div class="mt-8 pt-6 border-t border-slate-800/80 text-center text-[11px] text-slate-500">
+    <div class="mt-6 pt-5 border-t border-slate-800 text-center">
+      <div class="text-[11px] font-semibold text-slate-400 mb-2.5">Set up a Lab Computer:</div>
+      <div class="flex items-center justify-center gap-2">
+        <a href="/api/download/AlbayanMonitor.exe" download="AlbayanMonitor.exe" class="text-xs bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 px-3 py-1.5 rounded-lg border border-emerald-500/30 transition flex items-center gap-1.5 font-semibold">
+          <i class="fa-solid fa-file-arrow-down"></i>
+          <span>Download App (.exe)</span>
+        </a>
+        <a href="/api/download/setup-script" download="albayan_setup.bat" class="text-xs bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 px-3 py-1.5 rounded-lg border border-indigo-500/30 transition flex items-center gap-1.5">
+          <i class="fa-solid fa-terminal"></i>
+          <span>1-Click (.bat)</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="mt-6 pt-4 border-t border-slate-800/80 text-center text-[11px] text-slate-500">
       <p>Albayan Computer Lab • 24-Hour Auto-Purge</p>
     </div>
   </div>
@@ -1395,15 +1510,57 @@ def get_cctv_dashboard_html():
 
       <!-- Controls & Setup button -->
       <div class="flex items-center gap-2 sm:gap-3">
-        <a href="/api/download/setup-script" download="albayan_setup.bat" class="hidden sm:flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow-md transition">
-          <i class="fa-solid fa-cloud-arrow-down"></i>
-          <span>1-Click PC Installer</span>
-        </a>
+        <!-- Download for PC (Visible on all devices, mobile & desktop) -->
+        <div class="relative">
+          <button id="downloadDropdownBtn" onclick="toggleDownloadDropdown()" class="flex items-center gap-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-lg shadow-emerald-950/40 border border-emerald-400/40 transition">
+            <i class="fa-solid fa-download"></i>
+            <span>Download for PC</span>
+            <i class="fa-solid fa-chevron-down text-[9px] opacity-75"></i>
+          </button>
+          
+          <div id="downloadDropdownMenu" class="hidden absolute right-0 mt-2 w-72 bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl z-50 p-2 space-y-1.5 text-left">
+            <div class="px-3 py-2 border-b border-slate-800">
+              <div class="text-[11px] font-bold text-white uppercase tracking-wider">Download CCTV PC Client</div>
+              <div class="text-[10px] text-slate-400">Install on any computer to monitor screen</div>
+            </div>
 
-        <a href="/api/download/AlbayanMonitor.exe" download="AlbayanMonitor.exe" class="hidden sm:flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow-md transition" title="Standalone EXE - No Python needed">
-          <i class="fa-solid fa-file-arrow-down"></i>
-          <span>Standalone App (.exe)</span>
-        </a>
+            <!-- Option 1: Standalone EXE (Zero Python Required) -->
+            <a href="/api/download/AlbayanMonitor.exe" download="AlbayanMonitor.exe" class="flex items-center gap-2.5 p-2 rounded-xl hover:bg-emerald-600/10 hover:border-emerald-500/30 border border-transparent transition group">
+              <div class="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-sm shrink-0">
+                <i class="fa-solid fa-file-arrow-down"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="text-xs font-semibold text-white group-hover:text-emerald-400 flex items-center gap-1.5">
+                  <span>Standalone App (.exe)</span>
+                  <span class="text-[9px] bg-emerald-600/30 text-emerald-300 px-1 rounded">Recommended</span>
+                </div>
+                <div class="text-[10px] text-slate-400 truncate">No Python needed. 1-Click Run.</div>
+              </div>
+            </a>
+
+            <!-- Option 2: 1-Click Batch Installer -->
+            <a href="/api/download/setup-script" download="albayan_setup.bat" class="flex items-center gap-2.5 p-2 rounded-xl hover:bg-indigo-600/10 hover:border-indigo-500/30 border border-transparent transition group">
+              <div class="w-8 h-8 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-sm shrink-0">
+                <i class="fa-solid fa-terminal"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="text-xs font-semibold text-white group-hover:text-indigo-400">1-Click Setup Script (.bat)</div>
+                <div class="text-[10px] text-slate-400 truncate">Auto-installs background monitor</div>
+              </div>
+            </a>
+
+            <!-- Option 3: Python Source -->
+            <a href="/api/download/recorder.py" download="recorder.py" class="flex items-center gap-2.5 p-2 rounded-xl hover:bg-slate-800/60 border border-transparent transition group">
+              <div class="w-8 h-8 rounded-lg bg-slate-800 text-slate-400 flex items-center justify-center text-sm shrink-0">
+                <i class="fa-brands fa-python"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="text-xs font-semibold text-slate-300">Raw Python Script (.py)</div>
+                <div class="text-[10px] text-slate-500 truncate">Source code for advanced users</div>
+              </div>
+            </a>
+          </div>
+        </div>
 
         <div class="hidden md:flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/30 text-xs">
           <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -1848,10 +2005,18 @@ def get_cctv_dashboard_html():
                 </button>
               </div>
 
-              <!-- Snapshot download -->
-              <button onclick="downloadCurrentSnapshot('${camName}')" title="Download Full Snapshot" class="text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-800 px-2 py-1 rounded text-xs transition">
-                <i class="fa-solid fa-download"></i>
-              </button>
+              <div class="flex items-center gap-1.5 ml-auto">
+                <!-- Snapshot download -->
+                <button onclick="downloadCurrentSnapshot('${camName}')" title="Download Full Snapshot" class="text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-800 px-2 py-1 rounded text-xs transition border border-slate-800">
+                  <i class="fa-solid fa-camera"></i>
+                </button>
+
+                <!-- Remote Shutdown Button -->
+                <button onclick="confirmShutdown('${camName}')" title="Remotely Shutdown ${camName.toUpperCase()}" class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 transition flex items-center gap-1.5 shadow-sm">
+                  <i class="fa-solid fa-power-off text-rose-400"></i>
+                  <span>Shutdown</span>
+                </button>
+              </div>
             </div>
 
             <!-- Scrubber Slider for 5-Min History -->
@@ -2095,6 +2260,41 @@ def get_cctv_dashboard_html():
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
+      }
+    }
+
+    function toggleDownloadDropdown() {
+      const menu = document.getElementById("downloadDropdownMenu");
+      if (menu) menu.classList.toggle("hidden");
+    }
+
+    document.addEventListener("click", function(e) {
+      const btn = document.getElementById("downloadDropdownBtn");
+      const menu = document.getElementById("downloadDropdownMenu");
+      if (btn && menu && !btn.contains(e.target) && !menu.contains(e.target)) {
+        menu.classList.add("hidden");
+      }
+    });
+
+    async function confirmShutdown(camName) {
+      const pcTitle = camName.toUpperCase();
+      const ok = confirm(`⚠️ REMOTE SHUTDOWN WARNING ⚠️\n\nAre you sure you want to SHUT DOWN [${pcTitle}] immediately?\n\nThis will instantly power off the computer.`);
+      if (!ok) return;
+
+      try {
+        const res = await fetch('/api/command/shutdown', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ computer_name: camName })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert(`✅ SHUTDOWN SIGNAL SENT TO [${pcTitle}]!\n\nThe PC will shut down automatically in a few seconds.`);
+        } else {
+          alert(`❌ Could not send shutdown command: ` + (data.detail || data.message || 'Error'));
+        }
+      } catch (err) {
+        alert(`❌ Network error while sending shutdown command: ` + err.message);
       }
     }
 
