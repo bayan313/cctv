@@ -305,10 +305,15 @@ async def telegram_bot_poller():
                             else:
                                 send_telegram_message(f"ℹ️ No screenshot available yet for {target_pc}.")
 
-                    elif cmd == "/link":
+                    elif cmd in ["/link", "/web", "/url", "/portal"]:
+                        cfg = load_config()
+                        pub_url = cfg.get("public_web_url") or getattr(app.state, "public_web_url", None)
                         lan_ip = get_lan_ip()
                         port = cfg.get("server_port", 8899)
-                        send_telegram_message(f"🌐 *CCTV Web Dashboard:*\nhttp://{lan_ip}:{port}\nPassword: `albayan@2026`")
+                        if pub_url:
+                            send_telegram_message(f"🌐 *Albayan CCTV Real Web Portal:*\n{pub_url}\n\nPassword: `albayan@2026`\n📱 Open from anywhere on mobile or PC!")
+                        else:
+                            send_telegram_message(f"🌐 *CCTV Web Dashboard:*\nhttp://{lan_ip}:{port}\nPassword: `albayan@2026`")
 
         except Exception:
             pass
@@ -347,15 +352,103 @@ async def auto_delete_old_files():
 
         await asyncio.sleep(600)
 
+async def start_cloudflare_tunnel_task(app: FastAPI):
+    """Starts Cloudflare Tunnel automatically to expose CCTV server to Real Web."""
+    cfg = load_config()
+    if not cfg.get("enable_cloud_tunnel", True):
+        return
+
+    await asyncio.sleep(2)
+    port = cfg.get("server_port", 8899)
+    cloudflared_bin = BASE_DIR / "cloudflared.exe"
+
+    if not cloudflared_bin.exists():
+        import shutil
+        sys_cf = shutil.which("cloudflared")
+        if sys_cf:
+            cloudflared_bin = Path(sys_cf)
+        else:
+            print("[Tunnel] Downloading cloudflared.exe for Real Web access...")
+            try:
+                import urllib.request
+                url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+                urllib.request.urlretrieve(url, str(cloudflared_bin))
+                print("[Tunnel] cloudflared.exe downloaded successfully!")
+            except Exception as e:
+                print(f"[Tunnel] Error downloading cloudflared: {e}")
+                return
+
+    cmd = [str(cloudflared_bin), "tunnel", "--url", f"http://127.0.0.1:{port}"]
+    print(f"[Tunnel] Opening Cloudflare HTTPS Tunnel on port {port}...")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        app.state.tunnel_proc = proc
+
+        import re, webbrowser
+        url_pattern = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
+        public_url = None
+
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", errors="ignore")
+            match = url_pattern.search(text)
+            if match and not public_url:
+                public_url = match.group(0)
+                app.state.public_web_url = public_url
+
+                # Save into config
+                cfg_current = load_config()
+                cfg_current["public_web_url"] = public_url
+                save_config(cfg_current)
+
+                print("\n" + "=" * 70)
+                print("  🎉 [REAL WEB ACTIVE] ALBAYAN CCTV LAB IS LIVE ONLINE!")
+                print("=" * 70)
+                print(f"  🌐 Real Web Portal URL: {public_url}")
+                print(f"  🔑 Master Passcode:     {cfg_current.get('admin_password', 'albayan@2026')}")
+                print("  📱 Open this link on your mobile phone or any PC anywhere!")
+                print("=" * 70 + "\n")
+
+                # Telegram alert
+                msg = (
+                    f"🌐 *ALBAYAN CCTV IS LIVE ON THE REAL WEB!* 🌐\n\n"
+                    f"🔗 *Web Portal:* {public_url}\n"
+                    f"🔑 *Password:* `{cfg_current.get('admin_password', 'albayan@2026')}`\n\n"
+                    f"📱 Open this link from anywhere in the world on mobile data to monitor all 4 cameras!"
+                )
+                send_telegram_message(msg)
+
+                # Open browser
+                try:
+                    webbrowser.open(public_url)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[Tunnel] Tunnel error: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     t_tg = asyncio.create_task(telegram_bot_poller())
     t_clean = asyncio.create_task(auto_delete_old_files())
     t_up = asyncio.create_task(auto_updater_task())
+    t_tunnel = asyncio.create_task(start_cloudflare_tunnel_task(app))
     yield
     t_tg.cancel()
     t_clean.cancel()
     t_up.cancel()
+    t_tunnel.cancel()
+    if hasattr(app.state, "tunnel_proc") and app.state.tunnel_proc:
+        try:
+            app.state.tunnel_proc.terminate()
+        except Exception:
+            pass
 
 # App Instance with Lifespan
 app = FastAPI(title="Albayan CCTV Lab Monitor Portal", lifespan=lifespan)
@@ -415,9 +508,18 @@ def download_recorder_py():
 @app.get("/api/download/setup-script")
 def download_setup_script(request: Request, session: str = Depends(verify_session)):
     lan_ip = get_lan_ip()
-    port = load_config().get("server_port", 8899)
+    cfg = load_config()
+    port = cfg.get("server_port", 8899)
     host_header = request.headers.get("host")
-    server_base = f"http://{host_header}" if host_header else f"http://{lan_ip}:{port}"
+    proto = request.headers.get("x-forwarded-proto", "https" if request.url.scheme == "https" else "http")
+
+    pub_url = cfg.get("public_web_url") or getattr(app.state, "public_web_url", None)
+    if pub_url:
+        server_base = pub_url.rstrip("/")
+    elif host_header and not host_header.startswith("127.0.0.1") and not host_header.startswith("localhost"):
+        server_base = f"{proto}://{host_header}"
+    else:
+        server_base = f"http://{lan_ip}:{port}"
 
     script_content = f"""@echo off
 setlocal
@@ -710,10 +812,12 @@ def get_system_status(session: str = Depends(verify_session)):
     total_size_bytes = sum(f.stat().st_size for f in all_shots)
     lan_ip = get_lan_ip()
     port = cfg.get("server_port", 8899)
+    pub_url = cfg.get("public_web_url") or getattr(app.state, "public_web_url", "")
     
     return {
         "server_ip": lan_ip,
         "server_port": port,
+        "public_web_url": pub_url,
         "computers": computers_list,
         "total_online": online_count,
         "total_snapshots": len([f for f in all_shots if not f.name.startswith("live_")]),
@@ -897,9 +1001,10 @@ def get_cctv_dashboard_html():
           <span>1-Click PC Installer</span>
         </a>
 
-        <div class="hidden md:flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/60 text-xs">
-          <span class="text-slate-400">LAN:</span>
-          <span id="serverIpBadge" class="text-indigo-400 font-mono font-semibold">192.168.1.3:8899</span>
+        <div class="hidden md:flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/30 text-xs">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span class="text-slate-400">WEB:</span>
+          <span id="serverIpBadge" class="text-emerald-400 font-mono font-semibold">REAL WEB ONLINE</span>
         </div>
 
         <a href="https://t.me/my_library_data_bot" target="_blank" class="bg-sky-600/20 hover:bg-sky-600/30 text-sky-400 text-xs px-2.5 py-1.5 rounded-lg border border-sky-500/30 transition flex items-center gap-1.5">
@@ -1153,7 +1258,13 @@ def get_cctv_dashboard_html():
         }
         const data = await res.json();
         
-        document.getElementById('serverIpBadge').innerText = `${data.server_ip}:${data.server_port}`;
+        if (data.public_web_url) {
+          document.getElementById('serverIpBadge').innerText = 'REAL WEB LIVE';
+        } else if (window.location.protocol === 'https:' || !window.location.hostname.match(/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/)) {
+          document.getElementById('serverIpBadge').innerText = 'REAL WEB LIVE';
+        } else {
+          document.getElementById('serverIpBadge').innerText = `${data.server_ip}:${data.server_port}`;
+        }
         document.getElementById('onlineCountText').innerText = `${data.total_online} Online`;
 
         data.computers.forEach((pc, idx) => {
@@ -1424,13 +1535,13 @@ async def custom_404_handler(request: Request, exc):
 if __name__ == "__main__":
     lan_ip = get_lan_ip()
     port = config.get("server_port", 8899)
-    print("=" * 60)
-    print("  ALBAYAN CCTV LAB MONITOR - 4 CAMERAS SERVER")
-    print("=" * 60)
-    print(f" Web CCTV Monitor:  http://localhost:{port}")
-    print(f" Lab Network (LAN): http://{lan_ip}:{port}")
-    print(f" Master Password:   albayan@2026")
+    print("=" * 65)
+    print("  ALBAYAN CCTV LAB MONITOR - 4 CAMERAS REAL WEB SERVER")
+    print("=" * 65)
+    print(f" Real Web Status:   Connecting Cloudflare HTTPS Tunnel...")
+    print(f" Master Passcode:   albayan@2026")
+    print(f" Monitored PCs:     albayan 1, albayan 2, albayan 3, albayan 4")
     print(f" Capture Mode:      5-Min Screenshots (CCTV Timeline Reel)")
     print(f" Live Feed:         CCTV Quad Screen (every 3-5 seconds)")
-    print("=" * 60)
+    print("=" * 65)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

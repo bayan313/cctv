@@ -53,38 +53,45 @@ def get_machine_id():
         return socket.gethostname()
 
 def discover_server_url():
-    candidates = ["http://127.0.0.1:8899", "http://192.168.1.2:8899", "http://192.168.1.3:8899"]
+    candidates = []
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 c = json.load(f)
                 s = c.get("server_url")
                 if s and s not in candidates:
-                    candidates.insert(0, s)
+                    candidates.append(s)
         except Exception:
             pass
     if GLOBAL_CONFIG_PATH.exists():
         try:
             with open(GLOBAL_CONFIG_PATH, "r", encoding="utf-8") as f:
                 g = json.load(f)
+                pub = g.get("public_web_url")
+                if pub and pub not in candidates:
+                    candidates.insert(0, pub)
                 sip = g.get("server_ip")
                 sport = g.get("server_port", 8899)
                 if sip:
                     url = f"http://{sip}:{sport}"
                     if url not in candidates:
-                        candidates.insert(1, url)
+                        candidates.append(url)
         except Exception:
             pass
 
+    for fallback in ["http://127.0.0.1:8899", "http://192.168.1.2:8899", "http://192.168.1.3:8899"]:
+        if fallback not in candidates:
+            candidates.append(fallback)
+
     for url in candidates:
         try:
-            r = requests.get(f"{url}/api/status", timeout=1.5)
+            r = requests.get(f"{url}/api/status", timeout=2.5)
             if r.status_code in [200, 401]:
                 return url
         except Exception:
             pass
 
-    return candidates[0] if candidates else "http://192.168.1.3:8899"
+    return candidates[0] if candidates else "http://127.0.0.1:8899"
 
 def auto_register_pc():
     dev_id = get_machine_id()

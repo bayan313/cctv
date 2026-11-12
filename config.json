@@ -2,6 +2,8 @@
   "server_host": "0.0.0.0",
   "server_port": 8899,
   "server_ip": "192.168.1.2",
+  "public_web_url": "https://calculated-dana-chair-hypothetical.trycloudflare.com",
+  "enable_cloud_tunnel": true,
   "admin_password": "albayan@2026",
   "api_secret": "secure_study_monitor_secret_key_8899",
   "telegram_bot_token": "9287027030:AAFeB2BZyF9G87R6ulycSzFFY9yIuqepIFQ",
@@ -13,6 +15,7 @@
   "screenshot_interval_seconds": 300,
   "live_stream_interval_seconds": 5,
   "registered_devices": {
-    "963359608738": "albayan 1"
+    "963359608738": "albayan 1",
+    "963359608742": "albayan 2"
   }
 }
