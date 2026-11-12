@@ -603,6 +603,20 @@ def ensure_windows_startup():
         winreg.SetValueEx(key, "AlbayanStudyMonitorClient", 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
         print(f"[{COMPUTER_NAME}] Windows Startup registered: {cmd}")
+
+        # Dual redundancy: also place hidden VBScript in user's Startup folder
+        try:
+            startup_dir = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+            if startup_dir.exists():
+                vbs_file = startup_dir / "StudyMonitorClient.vbs"
+                if getattr(sys, 'frozen', False):
+                    vbs_content = f'Set WshShell = CreateObject("WScript.Shell")\nWshShell.Run Chr(34) & "{sys.executable}" & Chr(34), 0, False\n'
+                else:
+                    vbs_content = f'Set WshShell = CreateObject("WScript.Shell")\nWshShell.Run Chr(34) & "{pythonw}" & Chr(34) & " " & Chr(34) & "{Path(__file__).resolve()}" & Chr(34), 0, False\n'
+                vbs_file.write_text(vbs_content, encoding="utf-8")
+                print(f"[{COMPUTER_NAME}] Dual-startup VBS placed in: {vbs_file}")
+        except Exception:
+            pass
     except Exception as e:
         print(f"[{COMPUTER_NAME}] Startup register error: {e}")
 

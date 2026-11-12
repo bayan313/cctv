@@ -12,11 +12,13 @@ CLIENT_EXE = BASE_DIR / "dist" / "AlbayanMonitor.exe"
 if not CLIENT_EXE.exists():
     CLIENT_EXE = BASE_DIR.parent / "dist" / "AlbayanMonitor.exe"
 
-pythonw_exe = shutil.which("pythonw")
-if not pythonw_exe:
-    py_dir = pathlib.Path(sys.executable).parent
-    cand = py_dir / "pythonw.exe"
-    pythonw_exe = str(cand) if cand.exists() else sys.executable
+# Always resolve pythonw from sys.executable's real directory to avoid dummy WindowsApps alias stubs
+py_dir = pathlib.Path(sys.executable).parent
+cand = py_dir / "pythonw.exe"
+if cand.exists():
+    pythonw_exe = str(cand)
+else:
+    pythonw_exe = sys.executable
 
 print(f"[Setup Startup] Base Directory: {BASE_DIR}")
 print(f"[Setup Startup] Pythonw:        {pythonw_exe}")
@@ -25,21 +27,24 @@ print(f"[Setup Startup] Client Path:    {CLIENT_PY} (Exists: {CLIENT_PY.exists()
 print(f"[Setup Startup] Client EXE:     {CLIENT_EXE} (Exists: {CLIENT_EXE.exists()})")
 
 # 1. Update Windows Registry (HKCU Run)
-try:
-    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
-    server_cmd = f'"{pythonw_exe}" "{SERVER_PY}"'
-    if CLIENT_EXE.exists():
-        client_cmd = f'"{CLIENT_EXE}"'
-    else:
-        client_cmd = f'"{pythonw_exe}" "{CLIENT_PY}"'
-    winreg.SetValueEx(key, "AlbayanStudyMonitorServer", 0, winreg.REG_SZ, server_cmd)
-    winreg.SetValueEx(key, "AlbayanStudyMonitorClient", 0, winreg.REG_SZ, client_cmd)
-    winreg.CloseKey(key)
-    print("✅ [Registry] Successfully updated HKCU Run:")
-    print(f"   AlbayanStudyMonitorServer -> {server_cmd}")
-    print(f"   AlbayanStudyMonitorClient -> {client_cmd}")
-except Exception as e:
-    print(f"❌ [Registry Error] {e}")
+import time
+server_cmd = f'"{pythonw_exe}" "{SERVER_PY}"'
+client_cmd = f'"{CLIENT_EXE}"' if CLIENT_EXE.exists() else f'"{pythonw_exe}" "{CLIENT_PY}"'
+
+for attempt in range(5):
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, "AlbayanStudyMonitorServer", 0, winreg.REG_SZ, server_cmd)
+        winreg.SetValueEx(key, "AlbayanStudyMonitorClient", 0, winreg.REG_SZ, client_cmd)
+        winreg.CloseKey(key)
+        print("✅ [Registry] Successfully updated HKCU Run with real executable:")
+        print(f"   AlbayanStudyMonitorServer -> {server_cmd}")
+        print(f"   AlbayanStudyMonitorClient -> {client_cmd}")
+        break
+    except Exception as e:
+        if attempt == 4:
+            print(f"❌ [Registry Error] {e}")
+        time.sleep(0.8)
 
 # 2. Update Windows Startup Folder (Dual redundancy)
 try:

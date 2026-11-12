@@ -671,7 +671,7 @@ if not defined PY_EXE (
     echo   (Silent setup in user space - please wait ~20 sec)
     echo ========================================================
     powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe', '%TEMP%\\py_setup.exe')"
-    "%TEMP%\\py_setup.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_pip=1 SimpleInstall=1
+    start /wait "" "%TEMP%\\py_setup.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_pip=1 SimpleInstall=1
     del "%TEMP%\\py_setup.exe" >nul 2>nul
     
     for %%P in (
@@ -714,7 +714,7 @@ reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AlbayanStu
 set "VBS_FILE=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\StudyMonitorClient.vbs"
 (
     echo Set WshShell = CreateObject^("WScript.Shell"^)
-    echo WshShell.Run """!PYW_EXE!"" ""%TARGET_DIR%\\client\\recorder.py""", 0, False
+    echo WshShell.Run Chr^(34^) ^& "!PYW_EXE!" ^& Chr^(34^) ^& " " ^& Chr^(34^) ^& "%TARGET_DIR%\\client\\recorder.py" ^& Chr^(34^), 0, False
 ) > "!VBS_FILE!" 2>nul
 
 echo.
@@ -1304,7 +1304,7 @@ def get_login_html():
           body: JSON.stringify({ password: pwd })
         });
         if (res.ok) {
-          window.location.reload();
+          window.location.replace('/');
         } else {
           err.innerText = 'Incorrect password! Please try again.';
           err.classList.remove('hidden');
@@ -1325,6 +1325,29 @@ def get_cctv_dashboard_html():
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Albayan CCTV Monitor - 4 Camera Grid</title>
+  <script>
+    // Security: Auto-logout on every page refresh/reload as requested
+    (function() {
+      try {
+        var navEntries = (performance.getEntriesByType && performance.getEntriesByType("navigation")) || [];
+        var isReload = (navEntries.length > 0 && navEntries[0].type === "reload") || (performance.navigation && performance.navigation.type === 1);
+        var allowKeepLogin = localStorage.getItem("cctv_logout_on_refresh") === "false";
+        
+        if (isReload && !allowKeepLogin) {
+          // Immediately erase session cookie and call logout API
+          document.cookie = "session_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+          if (navigator.sendBeacon) {
+            navigator.sendBeacon("/api/logout");
+          } else {
+            fetch("/api/logout", { method: "POST", keepalive: true });
+          }
+          window.location.replace("/login");
+        }
+      } catch (e) {
+        console.error("Refresh security check error:", e);
+      }
+    })();
+  </script>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
   <style>
@@ -2141,7 +2164,8 @@ def get_cctv_dashboard_html():
 
     async function logout() {
       await fetch('/api/logout', { method: 'POST' });
-      window.location.reload();
+      document.cookie = "session_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+      window.location.replace('/login');
     }
 
     // ----------------- SETTINGS MODAL -----------------
@@ -2151,6 +2175,10 @@ def get_cctv_dashboard_html():
       const notice = document.getElementById("settingsNotice");
       notice.classList.add("hidden");
       modal.classList.remove("hidden");
+      const cfgRefreshEl = document.getElementById("cfg_logout_on_refresh");
+      if (cfgRefreshEl) {
+        cfgRefreshEl.checked = (localStorage.getItem("cctv_logout_on_refresh") !== "false");
+      }
       try {
         const res = await fetch("/api/settings");
         if (res.ok) {
@@ -2192,6 +2220,11 @@ def get_cctv_dashboard_html():
         send_videos_to_telegram: document.getElementById("cfg_send_videos_to_telegram").checked,
         video_recording_enabled: document.getElementById("cfg_video_recording_enabled").checked
       };
+
+      const cfgRefreshEl = document.getElementById("cfg_logout_on_refresh");
+      if (cfgRefreshEl) {
+        localStorage.setItem("cctv_logout_on_refresh", cfgRefreshEl.checked ? "true" : "false");
+      }
 
       try {
         const res = await fetch("/api/settings", {
