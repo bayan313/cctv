@@ -169,9 +169,9 @@ COMPUTER_NAME = normalize_pc_name(CONFIG.get("computer_name", "albayan 1"))
 SERVER_URL = CONFIG.get("server_url", "http://127.0.0.1:8899").rstrip("/")
 API_SECRET = CONFIG.get("api_secret", "secure_study_monitor_secret_key_8899")
 SCREENSHOT_INTERVAL = int(CONFIG.get("screenshot_interval_seconds", 300)) # 5 minutes
-LIVE_INTERVAL = int(CONFIG.get("live_stream_interval_seconds", 5)) # 5 seconds
+LIVE_INTERVAL = int(CONFIG.get("live_stream_interval_seconds", 4)) # 4 seconds
 VIDEO_RECORDING_ENABLED = bool(CONFIG.get("video_recording_enabled", True))
-VIDEO_FPS = int(CONFIG.get("video_fps", 10))
+VIDEO_FPS = int(CONFIG.get("video_fps", 5)) # 5 FPS: Ultra-light, smooth 24h recording
 CHUNK_MINUTES = int(CONFIG.get("video_chunk_minutes", 2))
 
 # ----------------- 1. RELIABLE NON-BLACK SCREEN CAPTURE -----------------
@@ -482,11 +482,18 @@ def upload_worker():
 
 def video_recorder_worker():
     """Records smooth screen video in configurable MP4 clips and uploads them."""
-    print(f"[{COMPUTER_NAME}] Screen Video Recorder initialized ({VIDEO_FPS} FPS, {CHUNK_MINUTES}-min clips)...")
+    print(f"[{COMPUTER_NAME}] Screen Video Recorder initialized ({VIDEO_FPS} FPS, {CHUNK_MINUTES}-min clips, 24h ultra-low size)...")
 
-    # Enqueue any pending files from previous session
+    # Enqueue any pending files from previous session, purging files older than 24h
+    now_ts = time.time()
     for prev_file in TEMP_DIR.glob("*.mp4"):
-        upload_queue.put(str(prev_file))
+        try:
+            if now_ts - prev_file.stat().st_mtime > 86400:
+                prev_file.unlink()
+            else:
+                upload_queue.put(str(prev_file))
+        except Exception:
+            pass
 
     ensure_interactive_desktop()
     sct_class = getattr(mss, "MSS", mss.mss)
@@ -526,15 +533,31 @@ def video_recorder_worker():
                 str(current_video_path),
                 fps=current_fps,
                 codec="libx264",
-                quality=6,
                 pixelformat="yuv420p",
-                macro_block_size=16,
-                output_params=["-movflags", "+faststart"]
+                macro_block_size=None,
+                output_params=[
+                    "-vf", "scale='min(960,iw)':-2",
+                    "-crf", "32",
+                    "-preset", "veryfast",
+                    "-tune", "zerolatency",
+                    "-movflags", "+faststart"
+                ]
             )
-        except Exception as err:
-            print(f"[{COMPUTER_NAME}] Video writer error: {err}")
-            time.sleep(3)
-            continue
+        except Exception:
+            try:
+                writer = imageio.get_writer(
+                    str(current_video_path),
+                    fps=current_fps,
+                    codec="libx264",
+                    quality=5,
+                    pixelformat="yuv420p",
+                    macro_block_size=16,
+                    output_params=["-movflags", "+faststart"]
+                )
+            except Exception as err:
+                print(f"[{COMPUTER_NAME}] Video writer error: {err}")
+                time.sleep(3)
+                continue
 
         chunk_start_time = time.time()
         chunk_end_time = chunk_start_time + (current_chunk_min * 60)
@@ -596,8 +619,9 @@ def video_recorder_worker():
         try:
             writer.close()
             if frame_count > 0 and current_video_path.exists():
-                size_mb = round(current_video_path.stat().st_size / (1024 * 1024), 2)
-                print(f"[{COMPUTER_NAME}] Finished {current_chunk_min}-min video clip: {video_filename} ({size_mb} MB)")
+                fsize = current_video_path.stat().st_size
+                size_str = f"{round(fsize / 1024, 1)} KB" if fsize < 1024 * 1024 else f"{round(fsize / (1024 * 1024), 2)} MB"
+                print(f"[{COMPUTER_NAME}] Finished {current_chunk_min}-min video clip: {video_filename} ({size_str})")
                 upload_queue.put(str(current_video_path))
         except Exception as e:
             print(f"[{COMPUTER_NAME}] Error closing video writer: {e}")

