@@ -13,6 +13,7 @@ import subprocess
 import hashlib
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 try:
     import truststore
