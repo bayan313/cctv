@@ -35,10 +35,107 @@ else:
 BASE_DIR = CLIENT_DIR.parent
 CONFIG_PATH = CLIENT_DIR / "client_config.json"
 GLOBAL_CONFIG_PATH = BASE_DIR / "config.json"
+STATE_FILE = CLIENT_DIR / "monitor_state.json"
 TEMP_DIR = CLIENT_DIR / "temp_records"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 upload_queue = queue.Queue()
+
+def get_recording_state() -> bool:
+    if STATE_FILE.exists():
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                return bool(d.get("recording_active", True))
+        except Exception:
+            pass
+    return True
+
+def set_recording_state(active: bool):
+    try:
+        data = {
+            "recording_active": active,
+            "updated_at": time.time(),
+            "computer_name": getattr(CONFIG, "get", lambda k, d: "albayan")("computer_name", "albayan") if "CONFIG" in globals() else "albayan"
+        }
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[State] Error writing state: {e}")
+
+def generate_cctv_icon(target_path: Path):
+    try:
+        from PIL import Image, ImageDraw
+        img = Image.new("RGBA", (64, 64), (15, 23, 42, 255))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle([4, 4, 60, 60], radius=14, fill=(16, 185, 129, 255))
+        # Camera body
+        d.rectangle([14, 22, 42, 42], fill=(255, 255, 255, 255))
+        # Camera lens
+        d.polygon([(42, 26), (50, 20), (50, 44), (42, 38)], fill=(255, 255, 255, 255))
+        # Lens center
+        d.ellipse([23, 27, 33, 37], fill=(16, 185, 129, 255))
+        img.save(str(target_path), format="ICO")
+        return True
+    except Exception:
+        return False
+
+def get_real_desktop_path() -> Path:
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
+        val, _ = winreg.QueryValueEx(key, "Desktop")
+        winreg.CloseKey(key)
+        expanded = os.path.expandvars(val)
+        p = Path(expanded)
+        if p.exists():
+            return p
+    except Exception:
+        pass
+    for cand in [
+        Path(os.environ.get("USERPROFILE", "")) / "Desktop",
+        Path(os.environ.get("USERPROFILE", "")) / "OneDrive" / "Desktop",
+        Path("D:/Users/AL-BAYAN"),
+        Path(os.path.expanduser("~/Desktop"))
+    ]:
+        if cand.exists():
+            return cand
+    return Path(os.path.expanduser("~"))
+
+def ensure_desktop_shortcut():
+    """Creates a clean Desktop shortcut for Albayan CCTV Monitor if not present."""
+    if os.name != "nt":
+        return
+    try:
+        desktop_dir = get_real_desktop_path()
+        shortcut_file = desktop_dir / "Albayan CCTV Monitor.lnk"
+
+        ico_file = CLIENT_DIR / "cctv_icon.ico"
+        if not ico_file.exists():
+            generate_cctv_icon(ico_file)
+
+        icon_loc = str(ico_file) if ico_file.exists() else "shell32.dll,14"
+
+        pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+        if not Path(pythonw).exists():
+            pythonw = sys.executable
+
+        target_script = Path(__file__).resolve()
+
+        ps_cmd = (
+            f"$ws = New-Object -ComObject WScript.Shell; "
+            f"$sc = $ws.CreateShortcut('{str(shortcut_file)}'); "
+            f"$sc.TargetPath = '{pythonw}'; "
+            f"$sc.Arguments = '\"{str(target_script)}\" --gui'; "
+            f"$sc.WorkingDirectory = '{str(CLIENT_DIR)}'; "
+            f"$sc.IconLocation = '{icon_loc}'; "
+            f"$sc.Description = 'Albayan CCTV Monitor - Control Panel'; "
+            f"$sc.Save()"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd], capture_output=True, timeout=8)
+        print(f"[{COMPUTER_NAME}] Desktop shortcut created: {shortcut_file}")
+    except Exception as e:
+        print(f"[{COMPUTER_NAME}] Error creating desktop shortcut: {e}")
 
 DEFAULT_PC_NAMES = ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]
 
@@ -318,6 +415,21 @@ def execute_system_shutdown():
     except Exception:
         pass
 
+def generate_paused_frame():
+    try:
+        card = Image.new("RGB", (960, 540), (15, 23, 42))
+        d = ImageDraw.Draw(card)
+        d.rectangle([20, 20, 940, 520], outline=(239, 68, 68), width=3)
+        now_str = datetime.now().strftime("%I:%M:%S %p")
+        d.rectangle([20, 20, 940, 80], fill=(30, 41, 59))
+        d.text((480, 50), f"[{COMPUTER_NAME.upper()}] - CCTV SCREEN MONITOR", fill=(248, 250, 252), anchor="mm")
+        d.text((480, 240), "■ RECORDING PAUSED BY ADMIN", fill=(239, 68, 68), anchor="mm")
+        d.text((480, 280), "Screen video recording & live monitoring temporarily suspended", fill=(148, 163, 184), anchor="mm")
+        d.text((480, 320), f"Status Check: {now_str}", fill=(100, 116, 139), anchor="mm")
+        return card
+    except Exception:
+        return None
+
 # ----------------- 3. LIVE CCTV STREAMER (EVERY 5 SECONDS) -----------------
 
 def live_cctv_worker():
@@ -325,7 +437,10 @@ def live_cctv_worker():
     print(f"[{COMPUTER_NAME}] Live CCTV streamer started (every {LIVE_INTERVAL}s)...")
     while True:
         try:
-            img = capture_desktop_image()
+            if not get_recording_state():
+                img = generate_paused_frame()
+            else:
+                img = capture_desktop_image()
             if img:
                 # Resize to 960x540 for lightweight live streaming
                 thumb = img.copy()
@@ -362,6 +477,9 @@ def five_minute_screenshot_worker():
     print(f"[{COMPUTER_NAME}] 5-minute screenshot scheduler active...")
     while True:
         try:
+            if not get_recording_state():
+                time.sleep(5)
+                continue
             img = capture_desktop_image()
             if img:
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -566,8 +684,8 @@ def video_recorder_worker():
     fallback_frame = np.zeros((height, width, 3), dtype=np.uint8)
 
     while True:
-        if not VIDEO_RECORDING_ENABLED:
-            time.sleep(5)
+        if not VIDEO_RECORDING_ENABLED or not get_recording_state():
+            time.sleep(2)
             continue
 
         ensure_interactive_desktop()
@@ -615,7 +733,7 @@ def video_recorder_worker():
         frame_count = 0
         last_valid_frame = None
 
-        while time.time() < chunk_end_time and VIDEO_RECORDING_ENABLED:
+        while time.time() < chunk_end_time and VIDEO_RECORDING_ENABLED and get_recording_state():
             loop_start = time.time()
             rgb_frame = None
 
@@ -711,11 +829,307 @@ def ensure_windows_startup():
     except Exception as e:
         print(f"[{COMPUTER_NAME}] Startup register error: {e}")
 
+def is_daemon_running() -> bool:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 8897))
+        s.close()
+        return False
+    except Exception:
+        return True
+
+def ensure_daemon_running():
+    if not is_daemon_running():
+        pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+        if not Path(pythonw).exists():
+            pythonw = sys.executable
+        target_script = Path(__file__).resolve()
+        try:
+            subprocess.Popen([pythonw, str(target_script), "--daemon"], cwd=str(CLIENT_DIR))
+            time.sleep(1)
+        except Exception:
+            pass
+
+def run_control_gui():
+    """
+    Opens the interactive Control Panel GUI with Password-Protected Start/Stop options.
+    """
+    import tkinter as tk
+    from tkinter import messagebox
+    import webbrowser
+
+    ensure_desktop_shortcut()
+    ensure_daemon_running()
+
+    root = tk.Tk()
+    root.title(f"Albayan CCTV Monitor - [{COMPUTER_NAME.upper()}]")
+    root.configure(bg="#090d16")
+
+    ico_file = CLIENT_DIR / "cctv_icon.ico"
+    if not ico_file.exists():
+        generate_cctv_icon(ico_file)
+    if ico_file.exists():
+        try:
+            root.iconbitmap(str(ico_file))
+        except Exception:
+            pass
+
+    w, h = 480, 480
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    x = max(0, (screen_w - w) // 2)
+    y = max(0, (screen_h - h) // 2)
+    root.geometry(f"{w}x{h}+{x}+{y}")
+    root.resizable(False, False)
+
+    # Header
+    hdr = tk.Frame(root, bg="#090d16", padx=20, pady=16)
+    hdr.pack(fill="x")
+
+    title_lbl = tk.Label(hdr, text="ALBAYAN CCTV MONITOR", font=("Segoe UI", 16, "bold"), fg="#38bdf8", bg="#090d16")
+    title_lbl.pack(anchor="w")
+
+    sub_lbl = tk.Label(hdr, text="Laboratory Screen Surveillance & Security Control Panel", font=("Segoe UI", 9), fg="#94a3b8", bg="#090d16")
+    sub_lbl.pack(anchor="w", pady=(2, 0))
+
+    # Main Card
+    card = tk.Frame(root, bg="#1e293b", highlightbackground="#334155", highlightthickness=1.5, padx=20, pady=14)
+    card.pack(fill="x", padx=20, pady=(0, 14))
+
+    def make_info_row(parent, label_text, val_text, val_color="#f8fafc"):
+        row = tk.Frame(parent, bg="#1e293b")
+        row.pack(fill="x", pady=2)
+        tk.Label(row, text=label_text, font=("Segoe UI", 9), fg="#94a3b8", bg="#1e293b").pack(side="left")
+        tk.Label(row, text=val_text, font=("Segoe UI", 9, "bold"), fg=val_color, bg="#1e293b").pack(side="right")
+
+    make_info_row(card, "🖥️ Computer Name:", COMPUTER_NAME.upper(), "#38bdf8")
+    make_info_row(card, "🌐 Web Surveillance:", "Connected (Cloud)", "#10b981")
+    make_info_row(card, "📹 Video Retention:", f"24 Hours Continuous ({CHUNK_MINUTES}m clips)", "#f8fafc")
+
+    tk.Frame(card, bg="#334155", height=1).pack(fill="x", pady=10)
+
+    # Status indicator
+    status_frame = tk.Frame(card, bg="#0f172a", padx=12, pady=10, highlightbackground="#334155", highlightthickness=1.5)
+    status_frame.pack(fill="x")
+
+    status_dot = tk.Label(status_frame, text="●", font=("Segoe UI", 14, "bold"), fg="#10b981", bg="#0f172a")
+    status_dot.pack(side="left", padx=(0, 6))
+
+    status_text = tk.Label(status_frame, text="RECORDING & TRANSMITTING ACTIVE", font=("Segoe UI", 10, "bold"), fg="#10b981", bg="#0f172a")
+    status_text.pack(side="left")
+
+    def update_status_ui():
+        is_active = get_recording_state()
+        if is_active:
+            status_dot.config(text="●", fg="#10b981")
+            status_text.config(text="RECORDING & TRANSMITTING ACTIVE", fg="#10b981")
+            status_frame.config(highlightbackground="#10b981")
+            btn_stop.config(state="normal", bg="#dc2626")
+            btn_start.config(state="disabled", bg="#334155")
+        else:
+            status_dot.config(text="■", fg="#ef4444")
+            status_text.config(text="RECORDING STOPPED / PAUSED", fg="#ef4444")
+            status_frame.config(highlightbackground="#ef4444")
+            btn_stop.config(state="disabled", bg="#334155")
+            btn_start.config(state="normal", bg="#16a34a")
+
+    def poll_state():
+        update_status_ui()
+        root.after(1000, poll_state)
+
+    def prompt_password(action_name):
+        dialog = tk.Toplevel(root)
+        dialog.title("Admin Authorization")
+        dialog.geometry("380x210")
+        dialog.configure(bg="#0f172a")
+        dialog.transient(root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        dx = x + (w - 380) // 2
+        dy = y + (h - 210) // 2
+        dialog.geometry(f"+{dx}+{dy}")
+
+        lbl = tk.Label(
+            dialog,
+            text=f"🔒 Enter Admin Password to {action_name} recording:",
+            font=("Segoe UI", 10, "bold"),
+            fg="#f8fafc",
+            bg="#0f172a",
+            wraplength=340
+        )
+        lbl.pack(pady=(18, 10))
+
+        pwd_var = tk.StringVar()
+        entry = tk.Entry(
+            dialog,
+            textvariable=pwd_var,
+            show="*",
+            font=("Segoe UI", 12),
+            bg="#1e293b",
+            fg="#f8fafc",
+            insertbackground="#f8fafc",
+            justify="center",
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground="#475569"
+        )
+        entry.pack(pady=6, padx=30, fill="x")
+        entry.focus_set()
+
+        err_lbl = tk.Label(dialog, text="", font=("Segoe UI", 8), fg="#ef4444", bg="#0f172a")
+        err_lbl.pack(pady=(2, 6))
+
+        result = {"success": False}
+
+        def on_confirm(event=None):
+            entered = pwd_var.get().strip()
+            valid_pwds = ["974621467097458841599745404128", "albayan@2026"]
+            if entered in valid_pwds:
+                result["success"] = True
+                dialog.destroy()
+            else:
+                err_lbl.config(text="❌ Invalid password! Access Denied.")
+                entry.delete(0, tk.END)
+
+        btn_row = tk.Frame(dialog, bg="#0f172a")
+        btn_row.pack(pady=4)
+
+        tk.Button(
+            btn_row,
+            text="Confirm",
+            command=on_confirm,
+            font=("Segoe UI", 9, "bold"),
+            bg="#10b981",
+            fg="#ffffff",
+            padx=16,
+            pady=4,
+            relief="flat",
+            cursor="hand2"
+        ).pack(side="left", padx=6)
+
+        tk.Button(
+            btn_row,
+            text="Cancel",
+            command=dialog.destroy,
+            font=("Segoe UI", 9),
+            bg="#334155",
+            fg="#cbd5e1",
+            padx=14,
+            pady=4,
+            relief="flat",
+            cursor="hand2"
+        ).pack(side="left", padx=6)
+
+        entry.bind("<Return>", on_confirm)
+        dialog.wait_window()
+        return result["success"]
+
+    def do_stop():
+        if prompt_password("STOP"):
+            set_recording_state(False)
+            update_status_ui()
+            messagebox.showinfo("CCTV Control", "⏹ Recording and live stream have been PAUSED.\n\nStatus: STOPPED")
+
+    def do_start():
+        if prompt_password("START"):
+            set_recording_state(True)
+            update_status_ui()
+            messagebox.showinfo("CCTV Control", "▶ Recording and live stream have been RESUMED.\n\nStatus: ACTIVE")
+
+    def do_open_web():
+        webbrowser.open(SERVER_URL if "vercel" in SERVER_URL else "https://cctv-lac-two.vercel.app")
+
+    def do_close():
+        root.destroy()
+
+    btn_frame = tk.Frame(root, bg="#090d16", padx=20)
+    btn_frame.pack(fill="x", pady=4)
+
+    btn_stop = tk.Button(
+        btn_frame,
+        text="⏹  STOP RECORDING (Password Required)",
+        font=("Segoe UI", 10, "bold"),
+        bg="#dc2626",
+        fg="#ffffff",
+        activebackground="#b91c1c",
+        activeforeground="#ffffff",
+        pady=8,
+        relief="flat",
+        cursor="hand2",
+        command=do_stop
+    )
+    btn_stop.pack(fill="x", pady=4)
+
+    btn_start = tk.Button(
+        btn_frame,
+        text="▶  START RECORDING (Password Required)",
+        font=("Segoe UI", 10, "bold"),
+        bg="#16a34a",
+        fg="#ffffff",
+        activebackground="#15803d",
+        activeforeground="#ffffff",
+        pady=8,
+        relief="flat",
+        cursor="hand2",
+        command=do_start
+    )
+    btn_start.pack(fill="x", pady=4)
+
+    btn_web = tk.Button(
+        btn_frame,
+        text="🌐  VIEW CCTV WEB PORTAL",
+        font=("Segoe UI", 9, "bold"),
+        bg="#1e293b",
+        fg="#38bdf8",
+        activebackground="#334155",
+        activeforeground="#38bdf8",
+        pady=6,
+        relief="flat",
+        cursor="hand2",
+        command=do_open_web
+    )
+    btn_web.pack(fill="x", pady=4)
+
+    btn_min = tk.Button(
+        btn_frame,
+        text="🔽  Minimize to Background (Keep Recording)",
+        font=("Segoe UI", 8),
+        bg="#090d16",
+        fg="#64748b",
+        activebackground="#090d16",
+        activeforeground="#94a3b8",
+        pady=4,
+        relief="flat",
+        cursor="hand2",
+        command=do_close
+    )
+    btn_min.pack(fill="x", pady=(6, 0))
+
+    root.protocol("WM_DELETE_WINDOW", do_close)
+    update_status_ui()
+    root.after(1000, poll_state)
+    root.mainloop()
+
 # ----------------- MAIN FLOW -----------------
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--popup":
         run_popup_ui()
+        sys.exit(0)
+
+    if len(sys.argv) > 1 and sys.argv[1] in ["--gui", "--control"]:
+        run_control_gui()
+        sys.exit(0)
+
+    # Check if daemon is already running
+    daemon_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        daemon_socket.bind(("127.0.0.1", 8897))
+    except Exception:
+        # Another background daemon is already running; open Control Panel GUI!
+        run_control_gui()
+        sys.exit(0)
 
     print(f"=================================================")
     print(f"  ALBAYAN CCTV MONITOR CLIENT - [{COMPUTER_NAME}]")
@@ -729,8 +1143,12 @@ if __name__ == "__main__":
     # Automatically ensure Windows Auto-Startup on first run
     ensure_windows_startup()
 
+    # Ensure Desktop Shortcut is created on the user's desktop
+    ensure_desktop_shortcut()
+
     # Show warning popup
-    show_recording_popup()
+    if "--daemon" not in sys.argv and "--silent" not in sys.argv:
+        show_recording_popup()
 
     # Send Boot Notification to Telegram & Server
     try:

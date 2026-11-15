@@ -72,4 +72,12 @@ try:
 except Exception as e:
     print(f"ℹ️ [Startup Folder Notice] Registry HKCU Run active: {e}")
 
+# 3. Create Desktop Icon for Control Panel (Start / Stop Recording with Password)
+try:
+    from client.recorder import ensure_desktop_shortcut
+    ensure_desktop_shortcut()
+    print("✅ [Desktop Shortcut] Ensured on user Desktop")
+except Exception as e:
+    print(f"ℹ️ [Desktop Shortcut Notice]: {e}")
+
 print("\n🎉 [SUCCESS] Computer will now start the monitoring tool automatically when turned ON!")

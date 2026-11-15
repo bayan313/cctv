@@ -15,6 +15,7 @@ __pycache__/
 
 # Local machine specific client configs
 client/client_config.json
+client/monitor_state.json
 .sessions.json
 server/.sessions.json
 

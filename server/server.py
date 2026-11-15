@@ -764,6 +764,9 @@ set "VBS_FILE=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Stud
     echo WshShell.Run Chr^(34^) ^& "!PYW_EXE!" ^& Chr^(34^) ^& " " ^& Chr^(34^) ^& "%TARGET_DIR%\\client\\recorder.py" ^& Chr^(34^), 0, False
 ) > "!VBS_FILE!" 2>nul
 
+:: 3. Create Desktop Shortcut for Control Panel (Start / Stop Recording with Password)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws = New-Object -ComObject WScript.Shell; $d = [System.Environment]::GetFolderPath('Desktop'); $s = $ws.CreateShortcut((Join-Path $d 'Albayan CCTV Monitor.lnk')); $s.TargetPath = '!PYW_EXE!'; $s.Arguments = '\"%TARGET_DIR%\\client\\recorder.py\" --gui'; $s.WorkingDirectory = '%TARGET_DIR%\\client'; $s.IconLocation = 'shell32.dll,14'; $s.Description = 'Albayan CCTV Monitor - Control Panel'; $s.Save()" >nul 2>nul
+
 echo.
 echo Launching Screen Monitor in Background...
 start "" "!PYW_EXE!" "%TARGET_DIR%\\client\\recorder.py"
@@ -772,6 +775,8 @@ echo.
 echo ========================================================
 echo   [SUCCESS] SETUP COMPLETE!
 echo   - Screen Monitor is active in the background.
+echo   - Desktop icon 'Albayan CCTV Monitor' created!
+echo   - Double-click desktop icon to Start/Stop recording with password.
 echo   - Whenever this PC is powered ON, it will start automatically!
 echo ========================================================
 echo.
