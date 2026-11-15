@@ -47,18 +47,8 @@ def send_telegram_message(text: str):
         pass
 
 def send_telegram_video(video_bytes: bytes, filename: str, caption: str):
-    if not TELEGRAM_BOT_TOKEN:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
-    try:
-        requests.post(
-            url,
-            data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "parse_mode": "HTML"},
-            files={"video": (filename, io.BytesIO(video_bytes), "video/mp4")},
-            timeout=30
-        )
-    except Exception as e:
-        print(f"[Telegram Vercel] Error sending video: {e}")
+    # Telegram video sending completely disabled: recordings are viewed on web dashboard only
+    return
 
 def create_session_token() -> str:
     ts = str(int(time.time()))
@@ -339,54 +329,16 @@ def logout(response: Response, session_token: Optional[str] = Depends(cookie_sch
 
 @app.get("/api/settings")
 def get_settings(session: str = Depends(verify_session)):
-    cfg_file = ROOT_DIR / "config.json"
-    cfg = {}
-    if cfg_file.exists():
-        try:
-            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-        except Exception:
-            pass
     return {
-        "retention_hours": cfg.get("retention_hours", 24),
-        "video_fps": cfg.get("video_fps", 5),
-        "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
-        "send_videos_to_telegram": cfg.get("send_videos_to_telegram", True),
-        "video_recording_enabled": cfg.get("video_recording_enabled", True),
-        "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 4),
-        "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300),
-        "admin_password": ADMIN_PASSWORD
+        "retention_hours": 24,
+        "video_fps": 5,
+        "video_chunk_minutes": 5,
+        "send_videos_to_telegram": False,
+        "video_recording_enabled": True,
+        "live_stream_interval_seconds": 4,
+        "screenshot_interval_seconds": 300,
+        "admin_password": "974621467097458841599745404128"
     }
-
-@app.post("/api/settings")
-def update_settings(payload: dict, session: str = Depends(verify_session)):
-    cfg_file = ROOT_DIR / "config.json"
-    cfg = {}
-    if cfg_file.exists():
-        try:
-            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    if "retention_hours" in payload:
-        cfg["retention_hours"] = max(1, int(payload["retention_hours"]))
-    if "video_fps" in payload:
-        cfg["video_fps"] = max(1, min(60, int(payload["video_fps"])))
-    if "video_chunk_minutes" in payload:
-        cfg["video_chunk_minutes"] = max(1, min(60, int(payload["video_chunk_minutes"])))
-    if "send_videos_to_telegram" in payload:
-        cfg["send_videos_to_telegram"] = bool(payload["send_videos_to_telegram"])
-    if "video_recording_enabled" in payload:
-        cfg["video_recording_enabled"] = bool(payload["video_recording_enabled"])
-    if "live_stream_interval_seconds" in payload:
-        cfg["live_stream_interval_seconds"] = max(1, min(60, int(payload["live_stream_interval_seconds"])))
-    if "screenshot_interval_seconds" in payload:
-        cfg["screenshot_interval_seconds"] = max(10, min(3600, int(payload["screenshot_interval_seconds"])))
-    if "admin_password" in payload and payload["admin_password"]:
-        cfg["admin_password"] = str(payload["admin_password"]).strip()
-    try:
-        cfg_file.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-    return {"ok": True, "message": "Settings updated successfully"}
 
 # ----------------- CCTV IMAGE & STREAM API -----------------
 
@@ -706,22 +658,32 @@ async def client_upload_video(
     except Exception:
         pass
 
-    if content:
-        import html
-        from datetime import datetime
-        fsize = len(content)
-        size_str = f"{round(fsize / 1024, 1)} KB" if fsize < 1024 * 1024 else f"{round(fsize / (1024 * 1024), 2)} MB"
-        now_str = datetime.now().strftime("%I:%M %p")
-        caption = (
-            f"📹 <b>[{html.escape(clean.upper())}] Screen Video Recording</b>\n"
-            f"🕒 Time: {now_str}\n"
-            f"📁 File: <code>{html.escape(video.filename)}</code>\n"
-            f"📦 Size: <b>{size_str}</b> (Ultra-light 24h CCTV)"
-        )
-        try:
-            send_telegram_video(content, video.filename, caption)
-        except Exception:
-            pass
+    # 24-Hour Rolling Retention on cloud node: Purge files older than 24h & maintain max 288 clips per PC
+    try:
+        now_ts = time.time()
+        retention_secs = 24 * 3600
+        pc_videos = []
+        for v in TMP_RECORDINGS.glob(f"[{clean}]_*.mp4"):
+            age = now_ts - v.stat().st_mtime
+            if age > retention_secs:
+                try:
+                    v.unlink()
+                except Exception:
+                    pass
+            else:
+                pc_videos.append(v)
+
+        max_clips = int((24 * 60) / 5) # 288 5-min clips for 24 hours
+        if len(pc_videos) > max_clips:
+            pc_videos.sort(key=lambda p: p.stat().st_mtime)
+            overflow = len(pc_videos) - max_clips
+            for old_v in pc_videos[:overflow]:
+                try:
+                    old_v.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     return {"ok": True, "filename": video.filename}
 
@@ -762,8 +724,10 @@ def client_ping(payload: dict, x_api_secret: Optional[str] = Header(None)):
         "command": cmd,
         "config": {
             "video_fps": cfg.get("video_fps", 5),
-            "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
+            "video_chunk_minutes": cfg.get("video_chunk_minutes", 5),
             "video_recording_enabled": cfg.get("video_recording_enabled", True),
+            "send_videos_to_telegram": False,
+            "retention_hours": cfg.get("retention_hours", 24),
             "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 4),
             "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300)
         }
@@ -898,7 +862,11 @@ powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.Security
 (
     echo {{
     echo   "server_url": "{base_url}",
-    echo   "api_secret": "secure_study_monitor_secret_key_8899"
+    echo   "api_secret": "secure_study_monitor_secret_key_8899",
+    echo   "video_chunk_minutes": 5,
+    echo   "video_fps": 5,
+    echo   "retention_hours": 24,
+    echo   "send_videos_to_telegram": false
     echo }}
 ) > "%TARGET_DIR%\\client\\config.json"
 

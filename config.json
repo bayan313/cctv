@@ -2,7 +2,7 @@
   "server_host": "0.0.0.0",
   "server_port": 8899,
   "server_ip": "192.168.1.2",
-  "public_web_url": "https://graphical-qty-steal-assumes.trycloudflare.com",
+  "public_web_url": "https://musical-infectious-downloaded-crowd.trycloudflare.com",
   "enable_cloud_tunnel": true,
   "admin_password": "974621467097458841599745404128",
   "api_secret": "secure_study_monitor_secret_key_8899",
@@ -10,9 +10,9 @@
   "telegram_chat_ids": [
     8003387798
   ],
-  "send_videos_to_telegram": true,
+  "send_videos_to_telegram": false,
   "video_recording_enabled": true,
-  "video_chunk_minutes": 2,
+  "video_chunk_minutes": 5,
   "video_fps": 5,
   "retention_hours": 24,
   "screenshot_interval_seconds": 300,

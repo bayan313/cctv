@@ -172,7 +172,7 @@ SCREENSHOT_INTERVAL = int(CONFIG.get("screenshot_interval_seconds", 300)) # 5 mi
 LIVE_INTERVAL = int(CONFIG.get("live_stream_interval_seconds", 4)) # 4 seconds
 VIDEO_RECORDING_ENABLED = bool(CONFIG.get("video_recording_enabled", True))
 VIDEO_FPS = int(CONFIG.get("video_fps", 5)) # 5 FPS: Ultra-light, smooth 24h recording
-CHUNK_MINUTES = int(CONFIG.get("video_chunk_minutes", 2))
+CHUNK_MINUTES = int(CONFIG.get("video_chunk_minutes", 5)) # 5-minute video chunks
 
 # ----------------- 1. RELIABLE NON-BLACK SCREEN CAPTURE -----------------
 
@@ -539,7 +539,7 @@ def video_recorder_worker():
                     "-vf", "scale='min(960,iw)':-2",
                     "-crf", "32",
                     "-preset", "veryfast",
-                    "-tune", "zerolatency",
+                    "-g", "25",
                     "-movflags", "+faststart"
                 ]
             )
