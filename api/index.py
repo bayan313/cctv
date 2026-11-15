@@ -759,34 +759,7 @@ if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
 if not exist "%TARGET_DIR%\\client" mkdir "%TARGET_DIR%\\client"
 if not exist "%TARGET_DIR%\\client\\temp_records" mkdir "%TARGET_DIR%\\client\\temp_records"
 
-echo [1/4] Checking for Standalone App (.exe - No Python Needed)...
-powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{base_url}/api/download/AlbayanMonitor.exe', '%TARGET_DIR%\\AlbayanMonitor.exe')" >nul 2>nul
-if exist "%TARGET_DIR%\\AlbayanMonitor.exe" (
-    for %%F in ("%TARGET_DIR%\\AlbayanMonitor.exe") do if %%~zF gtr 50000000 (
-        echo [OK] Standalone App downloaded successfully! (%%~zF bytes)
-        echo Setting up Windows Auto-Startup on PC Boot...
-        reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "\"%TARGET_DIR%\\AlbayanMonitor.exe\"" /f >nul
-        set "VBS_FILE=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\StudyMonitorClient.vbs"
-        (
-            echo Set WshShell = CreateObject^("WScript.Shell"^)
-            echo WshShell.Run Chr^(34^) ^& "%TARGET_DIR%\\AlbayanMonitor.exe" ^& Chr^(34^), 0, False
-        ) > "!VBS_FILE!" 2>nul
-        echo Launching Screen Monitor in Background...
-        start "" "%TARGET_DIR%\\AlbayanMonitor.exe"
-        echo.
-        echo ========================================================
-        echo   [SUCCESS] SETUP COMPLETE! (ZERO PYTHON REQUIRED)
-        echo   - Screen Monitor is active in the background.
-        echo   - Whenever this PC is powered ON, it will start automatically!
-        echo ========================================================
-        echo.
-        pause
-        exit /b 0
-    )
-)
-
-echo.
-echo [2/4] Standalone app fallback: Checking Python environment...
+echo [1/4] Checking Python environment...
 set "PY_EXE="
 set "PYW_EXE="
 
@@ -807,10 +780,13 @@ if not defined PY_EXE (
         "%LOCALAPPDATA%\\Programs\\Python\\Python312\\python.exe"
         "%LOCALAPPDATA%\\Programs\\Python\\Python311\\python.exe"
         "%LOCALAPPDATA%\\Programs\\Python\\Python310\\python.exe"
+        "%LOCALAPPDATA%\\Programs\\Python\\Python39\\python.exe"
         "C:\\Python313\\python.exe"
         "C:\\Python312\\python.exe"
         "C:\\Python311\\python.exe"
         "C:\\Python310\\python.exe"
+        "C:\\Program Files\\Python311\\python.exe"
+        "C:\\Program Files\\Python312\\python.exe"
     ) do (
         if not defined PY_EXE if exist "%%~P" (
             "%%~P" -c "import sys" >nul 2>nul
@@ -822,7 +798,7 @@ if not defined PY_EXE (
     )
 )
 
-:: Step C: If Python is STILL missing, auto-install official Python silently (no admin needed)
+:: Step C: If Python is missing, automatically install official Python silently
 if not defined PY_EXE (
     echo.
     echo ========================================================
@@ -831,23 +807,44 @@ if not defined PY_EXE (
     echo   (Silent setup in user space - please wait ~20 sec)
     echo ========================================================
     powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe', '%TEMP%\\py_setup.exe')"
-    start /wait "" "%TEMP%\\py_setup.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_pip=1 SimpleInstall=1
-    del "%TEMP%\\py_setup.exe" >nul 2>nul
+    if exist "%TEMP%\\py_setup.exe" (
+        start /wait "" "%TEMP%\\py_setup.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_pip=1 SimpleInstall=1
+        del "%TEMP%\\py_setup.exe" >nul 2>nul
+    )
     
     for %%P in (
         "%LOCALAPPDATA%\\Programs\\Python\\Python311\\python.exe"
         "%LOCALAPPDATA%\\Programs\\Python\\Python312\\python.exe"
         "%LOCALAPPDATA%\\Programs\\Python\\Python313\\python.exe"
+        "C:\\Python311\\python.exe"
     ) do (
         if not defined PY_EXE if exist "%%~P" (
             set "PY_EXE=%%~P"
             set "PYW_EXE=%%~dpPpythonw.exe"
         )
     )
+
+    :: Fallback to winget if direct installer did not finish
+    if not defined PY_EXE (
+        where winget >nul 2>nul
+        if !errorlevel! equ 0 (
+            echo   [!] Trying Windows winget installer...
+            winget install --id Python.Python.3.11 --silent --accept-source-agreements --accept-package-agreements >nul 2>nul
+            for %%P in (
+                "%LOCALAPPDATA%\\Programs\\Python\\Python311\\python.exe"
+                "%LOCALAPPDATA%\\Programs\\Python\\Python312\\python.exe"
+            ) do (
+                if not defined PY_EXE if exist "%%~P" (
+                    set "PY_EXE=%%~P"
+                    set "PYW_EXE=%%~dpPpythonw.exe"
+                )
+            )
+        )
+    )
 )
 
 if not defined PY_EXE (
-    echo [ERROR] Could not find or install Python. Please install Python from python.org.
+    echo [ERROR] Could not automatically install Python. Please download Python from python.org.
     pause
     exit /b 1
 )

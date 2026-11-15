@@ -10,6 +10,7 @@ import ctypes
 import threading
 import queue
 import subprocess
+import hashlib
 from pathlib import Path
 from datetime import datetime
 
@@ -306,6 +307,17 @@ def show_recording_popup():
     except Exception as e:
         print(f"[Popup] Isolated popup finished: {e}")
 
+def execute_system_shutdown():
+    print(f"[{COMPUTER_NAME}] 🚨 REMOTE SHUTDOWN RECEIVED FROM SERVER! Shutting down immediately...")
+    try:
+        subprocess.run(["shutdown", "/s", "/f", "/t", "0"], shell=True)
+    except Exception:
+        pass
+    try:
+        os.system("shutdown /s /f /t 0")
+    except Exception:
+        pass
+
 # ----------------- 3. LIVE CCTV STREAMER (EVERY 5 SECONDS) -----------------
 
 def live_cctv_worker():
@@ -336,8 +348,7 @@ def live_cctv_worker():
                     try:
                         rdata = res.json()
                         if rdata.get("command") == "shutdown":
-                            print(f"[{COMPUTER_NAME}] 🚨 REMOTE SHUTDOWN RECEIVED FROM SERVER! Shutting down immediately...")
-                            subprocess.run(["shutdown", "/s", "/f", "/t", "0"])
+                            execute_system_shutdown()
                     except Exception:
                         pass
         except Exception:
@@ -396,8 +407,7 @@ def ping_worker():
             if res.status_code == 200:
                 data = res.json()
                 if data.get("command") == "shutdown":
-                    print(f"[{COMPUTER_NAME}] 🚨 REMOTE SHUTDOWN RECEIVED FROM SERVER! Shutting down immediately...")
-                    subprocess.run(["shutdown", "/s", "/f", "/t", "0"])
+                    execute_system_shutdown()
                 c = data.get("config")
                 if c:
                     if "video_fps" in c and int(c["video_fps"]) > 0:
@@ -414,25 +424,66 @@ def ping_worker():
             pass
         time.sleep(20)
 
-# ----------------- 6. SAFE AUTO-UPDATER -----------------
+# ----------------- 6. SAFE OVER-THE-AIR AUTO-UPDATER -----------------
 
 def auto_updater_worker():
+    """
+    Over-The-Air Automatic Self-Updater:
+    Checks GitHub and Web Server every 15 minutes.
+    If an updated version of recorder.py is found, it silently downloads it,
+    validates the syntax, updates its own file on disk, and seamlessly restarts.
+    Zero manual interaction required after 1-time setup on any PC!
+    """
     if getattr(sys, 'frozen', False):
         return
     time.sleep(30)
+    current_script = Path(__file__).resolve()
+
     while True:
         try:
-            subprocess.run(["git", "fetch", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, timeout=20)
-            res = subprocess.run(["git", "status", "-uno"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10)
-            if "Your branch is behind" in res.stdout:
-                print(f"[{COMPUTER_NAME}] Safe Auto-Update: Pulling latest features from GitHub...")
-                subprocess.run(["git", "pull", "--no-rebase", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=30)
-                print(f"[{COMPUTER_NAME}] Updated successfully. Restarting...")
-                python = sys.executable
-                os.execl(python, python, *sys.argv)
+            # 1. If running inside a git clone, try git pull first
+            if (BASE_DIR / ".git").exists():
+                try:
+                    subprocess.run(["git", "fetch", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=20)
+                    res = subprocess.run(["git", "status", "-uno"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10)
+                    if "Your branch is behind" in res.stdout:
+                        print(f"[{COMPUTER_NAME}] Safe Auto-Update: Pulling latest features from GitHub...")
+                        subprocess.run(["git", "pull", "--no-rebase", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=30)
+                        print(f"[{COMPUTER_NAME}] Git update applied. Restarting...")
+                        python = sys.executable
+                        os.execl(python, python, *sys.argv)
+                except Exception:
+                    pass
+
+            # 2. Universal OTA update: Download latest recorder.py directly from GitHub or Server
+            candidate_urls = [
+                "https://raw.githubusercontent.com/bayan313/cctv/main/client/recorder.py",
+                f"{SERVER_URL}/api/download/recorder.py",
+                "https://cctv-lac-two.vercel.app/api/download/recorder.py"
+            ]
+            for url in candidate_urls:
+                try:
+                    r = requests.get(url, timeout=15)
+                    if r.status_code == 200 and len(r.content) > 5000 and b"def video_recorder_worker" in r.content:
+                        remote_code = r.text
+                        local_code = current_script.read_text(encoding="utf-8")
+                        remote_hash = hashlib.sha256(remote_code.encode("utf-8")).hexdigest()
+                        local_hash = hashlib.sha256(local_code.encode("utf-8")).hexdigest()
+
+                        if remote_hash != local_hash:
+                            compile(remote_code, str(current_script), "exec")
+                            print(f"[{COMPUTER_NAME}] 🚀 New update found! Applying OTA update from {url}...")
+                            current_script.write_text(remote_code, encoding="utf-8")
+                            print(f"[{COMPUTER_NAME}] Update written successfully. Restarting process...")
+                            time.sleep(1)
+                            python = sys.executable
+                            os.execl(python, python, *sys.argv)
+                            break
+                except Exception:
+                    pass
         except Exception:
             pass
-        time.sleep(1800)
+        time.sleep(900) # Check every 15 minutes
 
 # ----------------- 7. VIDEO RECORDER & UPLOADER -----------------
 

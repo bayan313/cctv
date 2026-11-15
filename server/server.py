@@ -639,34 +639,7 @@ if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
 if not exist "%TARGET_DIR%\\client" mkdir "%TARGET_DIR%\\client"
 if not exist "%TARGET_DIR%\\client\\temp_records" mkdir "%TARGET_DIR%\\client\\temp_records"
 
-echo [1/4] Checking for Standalone App (.exe - No Python Needed)...
-powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{server_base}/api/download/AlbayanMonitor.exe', '%TARGET_DIR%\\AlbayanMonitor.exe')" >nul 2>nul
-if exist "%TARGET_DIR%\\AlbayanMonitor.exe" (
-    for %%F in ("%TARGET_DIR%\\AlbayanMonitor.exe") do if %%~zF gtr 50000000 (
-        echo [OK] Standalone App downloaded successfully! (%%~zF bytes)
-        echo Setting up Windows Auto-Startup on PC Boot...
-        reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AlbayanStudyMonitorClient" /t REG_SZ /d "\"%TARGET_DIR%\\AlbayanMonitor.exe\"" /f >nul
-        set "VBS_FILE=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\StudyMonitorClient.vbs"
-        (
-            echo Set WshShell = CreateObject^("WScript.Shell"^)
-            echo WshShell.Run Chr^(34^) ^& "%TARGET_DIR%\\AlbayanMonitor.exe" ^& Chr^(34^), 0, False
-        ) > "!VBS_FILE!" 2>nul
-        echo Launching Screen Monitor in Background...
-        start "" "%TARGET_DIR%\\AlbayanMonitor.exe"
-        echo.
-        echo ========================================================
-        echo   [SUCCESS] SETUP COMPLETE! (ZERO PYTHON REQUIRED)
-        echo   - Screen Monitor is active in the background.
-        echo   - Whenever this PC is powered ON, it will start automatically!
-        echo ========================================================
-        echo.
-        pause
-        exit /b 0
-    )
-)
-
-echo.
-echo [2/4] Standalone app fallback: Checking Python environment...
+echo [1/3] Checking Python environment...
 set "PY_EXE="
 set "PYW_EXE="
 
@@ -687,10 +660,13 @@ if not defined PY_EXE (
         "%LOCALAPPDATA%\\Programs\\Python\\Python312\\python.exe"
         "%LOCALAPPDATA%\\Programs\\Python\\Python311\\python.exe"
         "%LOCALAPPDATA%\\Programs\\Python\\Python310\\python.exe"
+        "%LOCALAPPDATA%\\Programs\\Python\\Python39\\python.exe"
         "C:\\Python313\\python.exe"
         "C:\\Python312\\python.exe"
         "C:\\Python311\\python.exe"
         "C:\\Python310\\python.exe"
+        "C:\\Program Files\\Python311\\python.exe"
+        "C:\\Program Files\\Python312\\python.exe"
     ) do (
         if not defined PY_EXE if exist "%%~P" (
             "%%~P" -c "import sys" >nul 2>nul
@@ -702,7 +678,7 @@ if not defined PY_EXE (
     )
 )
 
-:: Step C: If Python is STILL missing, auto-install official Python silently (no admin needed)
+:: Step C: If Python is missing, automatically install official Python silently
 if not defined PY_EXE (
     echo.
     echo ========================================================
@@ -711,23 +687,44 @@ if not defined PY_EXE (
     echo   (Silent setup in user space - please wait ~20 sec)
     echo ========================================================
     powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe', '%TEMP%\\py_setup.exe')"
-    start /wait "" "%TEMP%\\py_setup.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_pip=1 SimpleInstall=1
-    del "%TEMP%\\py_setup.exe" >nul 2>nul
+    if exist "%TEMP%\\py_setup.exe" (
+        start /wait "" "%TEMP%\\py_setup.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_pip=1 SimpleInstall=1
+        del "%TEMP%\\py_setup.exe" >nul 2>nul
+    )
     
     for %%P in (
         "%LOCALAPPDATA%\\Programs\\Python\\Python311\\python.exe"
         "%LOCALAPPDATA%\\Programs\\Python\\Python312\\python.exe"
         "%LOCALAPPDATA%\\Programs\\Python\\Python313\\python.exe"
+        "C:\\Python311\\python.exe"
     ) do (
         if not defined PY_EXE if exist "%%~P" (
             set "PY_EXE=%%~P"
             set "PYW_EXE=%%~dpPpythonw.exe"
         )
     )
+
+    :: Fallback to winget if direct installer did not finish
+    if not defined PY_EXE (
+        where winget >nul 2>nul
+        if !errorlevel! equ 0 (
+            echo   [!] Trying Windows winget installer...
+            winget install --id Python.Python.3.11 --silent --accept-source-agreements --accept-package-agreements >nul 2>nul
+            for %%P in (
+                "%LOCALAPPDATA%\\Programs\\Python\\Python311\\python.exe"
+                "%LOCALAPPDATA%\\Programs\\Python\\Python312\\python.exe"
+            ) do (
+                if not defined PY_EXE if exist "%%~P" (
+                    set "PY_EXE=%%~P"
+                    set "PYW_EXE=%%~dpPpythonw.exe"
+                )
+            )
+        )
+    )
 )
 
 if not defined PY_EXE (
-    echo [ERROR] Could not find or install Python. Please install Python from python.org.
+    echo [ERROR] Could not automatically install Python. Please download Python from python.org.
     pause
     exit /b 1
 )
@@ -737,7 +734,7 @@ echo [OK] Python detected: !PY_EXE!
 echo [OK] Silent runner:  !PYW_EXE!
 
 echo.
-echo [2/4] Downloading latest CCTV monitoring client...
+echo [2/3] Downloading latest CCTV monitoring client...
 powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{server_base}/api/download/recorder.py', '%TARGET_DIR%\\client\\recorder.py')"
 (
     echo {{
@@ -1370,14 +1367,10 @@ def get_login_html():
 
     <div class="mt-6 pt-5 border-t border-slate-800 text-center">
       <div class="text-[11px] font-semibold text-slate-400 mb-2.5">Set up a Lab Computer:</div>
-      <div class="flex items-center justify-center gap-2">
-        <a href="/api/download/AlbayanMonitor.exe" download="AlbayanMonitor.exe" class="text-xs bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 px-3 py-1.5 rounded-lg border border-emerald-500/30 transition flex items-center gap-1.5 font-semibold">
-          <i class="fa-solid fa-file-arrow-down"></i>
-          <span>Download App (.exe)</span>
-        </a>
-        <a href="/api/download/setup-script" download="albayan_setup.bat" class="text-xs bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 px-3 py-1.5 rounded-lg border border-indigo-500/30 transition flex items-center gap-1.5">
-          <i class="fa-solid fa-terminal"></i>
-          <span>1-Click (.bat)</span>
+      <div class="flex items-center justify-center">
+        <a href="/api/download/setup-script" download="albayan_setup.bat" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl transition flex items-center gap-2 font-semibold shadow-lg shadow-emerald-600/30">
+          <i class="fa-solid fa-download"></i>
+          <span>Download PC App (1-Click Setup)</span>
         </a>
       </div>
     </div>
@@ -1485,57 +1478,11 @@ def get_cctv_dashboard_html():
 
       <!-- Controls & Setup button -->
       <div class="flex items-center gap-2 sm:gap-3">
-        <!-- Download for PC (Visible on all devices, mobile & desktop) -->
-        <div class="relative">
-          <button id="downloadDropdownBtn" onclick="toggleDownloadDropdown()" class="flex items-center gap-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-lg shadow-emerald-950/40 border border-emerald-400/40 transition">
-            <i class="fa-solid fa-download"></i>
-            <span>Download for PC</span>
-            <i class="fa-solid fa-chevron-down text-[9px] opacity-75"></i>
-          </button>
-          
-          <div id="downloadDropdownMenu" class="hidden absolute right-0 mt-2 w-72 bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl z-50 p-2 space-y-1.5 text-left">
-            <div class="px-3 py-2 border-b border-slate-800">
-              <div class="text-[11px] font-bold text-white uppercase tracking-wider">Download CCTV PC Client</div>
-              <div class="text-[10px] text-slate-400">Install on any computer to monitor screen</div>
-            </div>
-
-            <!-- Option 1: Standalone EXE (Zero Python Required) -->
-            <a href="/api/download/AlbayanMonitor.exe" download="AlbayanMonitor.exe" class="flex items-center gap-2.5 p-2 rounded-xl hover:bg-emerald-600/10 hover:border-emerald-500/30 border border-transparent transition group">
-              <div class="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-sm shrink-0">
-                <i class="fa-solid fa-file-arrow-down"></i>
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="text-xs font-semibold text-white group-hover:text-emerald-400 flex items-center gap-1.5">
-                  <span>Standalone App (.exe)</span>
-                  <span class="text-[9px] bg-emerald-600/30 text-emerald-300 px-1 rounded">Recommended</span>
-                </div>
-                <div class="text-[10px] text-slate-400 truncate">No Python needed. 1-Click Run.</div>
-              </div>
-            </a>
-
-            <!-- Option 2: 1-Click Batch Installer -->
-            <a href="/api/download/setup-script" download="albayan_setup.bat" class="flex items-center gap-2.5 p-2 rounded-xl hover:bg-indigo-600/10 hover:border-indigo-500/30 border border-transparent transition group">
-              <div class="w-8 h-8 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-sm shrink-0">
-                <i class="fa-solid fa-terminal"></i>
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="text-xs font-semibold text-white group-hover:text-indigo-400">1-Click Setup Script (.bat)</div>
-                <div class="text-[10px] text-slate-400 truncate">Auto-installs background monitor</div>
-              </div>
-            </a>
-
-            <!-- Option 3: Python Source -->
-            <a href="/api/download/recorder.py" download="recorder.py" class="flex items-center gap-2.5 p-2 rounded-xl hover:bg-slate-800/60 border border-transparent transition group">
-              <div class="w-8 h-8 rounded-lg bg-slate-800 text-slate-400 flex items-center justify-center text-sm shrink-0">
-                <i class="fa-brands fa-python"></i>
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="text-xs font-semibold text-slate-300">Raw Python Script (.py)</div>
-                <div class="text-[10px] text-slate-500 truncate">Source code for advanced users</div>
-              </div>
-            </a>
-          </div>
-        </div>
+        <!-- Download for PC (Single Direct 1-Click Installer) -->
+        <a href="/api/download/setup-script" download="albayan_setup.bat" class="flex items-center gap-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-lg shadow-emerald-950/40 border border-emerald-400/40 transition hover:scale-[1.02]" title="1-Click Setup for any PC (Zero Python Configuration)">
+          <i class="fa-solid fa-download"></i>
+          <span>Download for PC (1-Click)</span>
+        </a>
 
         <div class="hidden md:flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/30 text-xs">
           <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -1715,9 +1662,9 @@ def get_cctv_dashboard_html():
 
     CAM_NAMES.forEach((name, idx) => {
       camStates[name] = {
-        mode: "live", // "live" or "history"
-        historyIndex: 0,
-        screenshots: [],
+        mode: "live", // "live" or "playback"
+        videoIndex: 0,
+        videos: [],
         isPlaying: false,
         lastLiveUrl: `/api/live/${encodeURIComponent(name)}?t=${Date.now()}`
       };
@@ -1754,7 +1701,7 @@ def get_cctv_dashboard_html():
             </div>
           </div>
 
-          <!-- Screen Canvas with CCTV OSD -->
+          <!-- Screen Canvas with CCTV OSD & Embedded Video Player -->
           <div class="relative bg-black aspect-video flex items-center justify-center overflow-hidden group">
             <img 
               id="img_${idx}" 
@@ -1762,9 +1709,15 @@ def get_cctv_dashboard_html():
               alt="${camName} Screen" 
               class="w-full h-full object-contain"
             />
+            <video 
+              id="video_${idx}" 
+              class="w-full h-full object-contain hidden bg-black" 
+              playsinline 
+              controls
+            ></video>
             
             <!-- Retro OSD Scanlines & Labels -->
-            <div class="absolute inset-0 pointer-events-none cctv-scanline opacity-30"></div>
+            <div class="absolute inset-0 pointer-events-none cctv-scanline opacity-20"></div>
 
             <!-- Top Left CCTV OSD -->
             <div class="absolute top-2 left-2 pointer-events-none font-mono text-[11px] text-emerald-400 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] flex flex-col gap-0.5">
@@ -1772,51 +1725,74 @@ def get_cctv_dashboard_html():
                 <span id="osd_rec_${idx}" class="w-2 h-2 rounded-full bg-red-500 pulse-rec"></span>
                 <span id="osd_title_${idx}">REC [${camName.toUpperCase()}]</span>
               </div>
-              <div id="osd_sub_${idx}" class="text-[10px] text-slate-300">5-MIN SNAPSHOT MODE</div>
+              <div id="osd_sub_${idx}" class="text-[10px] text-slate-300">24H ROLLING CCTV</div>
             </div>
 
             <!-- Bottom Right CCTV OSD -->
-            <div class="absolute bottom-2 right-2 pointer-events-none font-mono text-[10px] text-emerald-400 bg-black/60 px-2 py-0.5 rounded border border-emerald-500/20">
+            <div class="absolute bottom-2 right-2 pointer-events-none font-mono text-[10px] text-emerald-400 bg-black/70 px-2 py-0.5 rounded border border-emerald-500/20">
               <span id="osd_frame_info_${idx}">LIVE FEED</span>
             </div>
           </div>
 
-          <!-- CCTV DVR Playback Toolbar (Directly beneath camera) -->
-          <div class="bg-slate-950 px-3 py-2 border-t border-slate-800 flex flex-col gap-2">
-            <div class="flex items-center justify-between gap-2">
+          <!-- CCTV Timeline Scrub Bar (Always visible full-width line like real CCTV) -->
+          <div class="bg-slate-950 px-3 pt-2 pb-2.5 border-t border-slate-800 flex flex-col gap-1.5">
+            <!-- The Long Line (Timeline Bar) -->
+            <div class="flex flex-col gap-0.5">
+              <div class="flex items-center justify-between text-[10px] font-mono">
+                <span class="text-slate-400 flex items-center gap-1">
+                  <i class="fa-solid fa-timeline text-purple-400"></i>
+                  <span id="timeline_badge_${idx}" class="text-purple-300 font-semibold">24h Timeline</span>
+                </span>
+                <span id="slider_label_${idx}" class="text-emerald-400 font-bold">🔴 LIVE FEED</span>
+              </div>
+              
+              <div class="relative py-1">
+                <input 
+                  id="slider_${idx}" 
+                  type="range" 
+                  min="0" 
+                  max="0" 
+                  value="0" 
+                  oninput="onTimelineScrub('${camName}', this.value)" 
+                  class="w-full accent-purple-500 hover:accent-purple-400 bg-slate-800 h-2.5 rounded-lg cursor-pointer transition shadow-inner"
+                  title="Click or drag anywhere on the timeline to play 5-minute video recordings in order"
+                />
+              </div>
+
+              <div class="flex justify-between text-[9px] text-slate-500 font-mono px-0.5">
+                <span>◀ 24h Ago (Older)</span>
+                <span id="timeline_count_${idx}" class="text-slate-400">0 Videos</span>
+                <span>Now (Latest) ▶</span>
+              </div>
+            </div>
+
+            <!-- CCTV Playback & Remote Controls -->
+            <div class="flex items-center justify-between gap-2 pt-1 border-t border-slate-900">
               <div class="flex items-center gap-1.5">
+                <!-- Jump to Live button -->
                 <button 
                   id="btn_live_${idx}" 
-                  onclick="setCamMode('${camName}', 'live')" 
+                  onclick="switchToLive('${camName}')" 
                   class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white shadow transition flex items-center gap-1"
                 >
                   <i class="fa-solid fa-circle text-[8px] text-white pulse-rec"></i> Live
                 </button>
-                <button 
-                  id="btn_hist_${idx}" 
-                  onclick="setCamMode('${camName}', 'history')" 
-                  class="px-2.5 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-800 transition flex items-center gap-1"
-                >
-                  <i class="fa-solid fa-clock-rotate-left text-xs text-amber-400"></i> 5-Min Reel
-                </button>
-              </div>
 
-              <!-- History Playback Controls (Visible only in History Mode) -->
-              <div id="hist_controls_${idx}" class="hidden flex items-center gap-1">
-                <button onclick="stepHistory('${camName}', -1)" title="Previous 5-Min Snapshot" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded transition">
+                <!-- Order Controls (Prev / Play / Next) -->
+                <button onclick="stepVideo('${camName}', -1)" title="Previous 5-Min Video" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg transition border border-slate-700/60">
                   <i class="fa-solid fa-backward-step"></i>
                 </button>
-                <button id="btn_play_${idx}" onclick="togglePlayHistory('${camName}')" class="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded transition flex items-center gap-1">
-                  <i class="fa-solid fa-play text-[10px]"></i> Play
+                <button id="btn_play_${idx}" onclick="togglePlayVideo('${camName}')" class="px-2.5 py-1 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg transition flex items-center gap-1 shadow-sm">
+                  <i id="play_icon_${idx}" class="fa-solid fa-play text-[10px]"></i> Play
                 </button>
-                <button onclick="stepHistory('${camName}', 1)" title="Next 5-Min Snapshot" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded transition">
+                <button onclick="stepVideo('${camName}', 1)" title="Next 5-Min Video" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg transition border border-slate-700/60">
                   <i class="fa-solid fa-forward-step"></i>
                 </button>
               </div>
 
               <div class="flex items-center gap-1.5 ml-auto">
                 <!-- Snapshot download -->
-                <button onclick="downloadCurrentSnapshot('${camName}')" title="Download Full Snapshot" class="text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-800 px-2 py-1 rounded text-xs transition border border-slate-800">
+                <button onclick="downloadCurrentSnapshot('${camName}')" title="Download Full Snapshot" class="text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-800 px-2 py-1 rounded-lg text-xs transition border border-slate-800">
                   <i class="fa-solid fa-camera"></i>
                 </button>
 
@@ -1827,24 +1803,11 @@ def get_cctv_dashboard_html():
                 </button>
               </div>
             </div>
-
-            <!-- Scrubber Slider for 5-Min History -->
-            <div id="scrubber_container_${idx}" class="hidden pt-1 border-t border-slate-900 flex items-center gap-2">
-              <input 
-                id="slider_${idx}" 
-                type="range" 
-                min="0" 
-                max="0" 
-                value="0" 
-                oninput="onScrubberSlide('${camName}', this.value)" 
-                class="w-full accent-indigo-500 bg-slate-800 h-1.5 rounded cursor-pointer"
-              />
-              <span id="slider_label_${idx}" class="font-mono text-[10px] text-slate-400 shrink-0 w-28 text-right">00:00 AM</span>
-            </div>
           </div>
         `;
 
         grid.appendChild(panel);
+        loadCamVideos(camName);
       });
     }
 
@@ -1867,7 +1830,6 @@ def get_cctv_dashboard_html():
         if (state.mode === "live") {
           const imgEl = document.getElementById(`img_${idx}`);
           if (imgEl) {
-            // Preload image off-screen to avoid flicker
             const tempImg = new Image();
             const newUrl = `/api/live/${encodeURIComponent(camName)}?t=${Date.now()}`;
             tempImg.src = newUrl;
@@ -1883,7 +1845,7 @@ def get_cctv_dashboard_html():
     }
     setInterval(refreshLiveFeeds, 3500);
 
-    // Refresh system status from server
+    // Refresh system status & cam videos from server
     async function refreshStatus() {
       try {
         const res = await fetch('/api/status');
@@ -1917,173 +1879,177 @@ def get_cctv_dashboard_html():
             }
           }
         });
+
+        // Background update of timeline videos
+        CAM_NAMES.forEach(cam => loadCamVideos(cam));
       } catch (e) {
         console.error("Status error:", e);
       }
     }
-    setInterval(refreshStatus, 4000);
+    setInterval(refreshStatus, 8000);
 
-    // ----------------- CCTV DVR HISTORY & SCRUBBER -----------------
+    // ----------------- CCTV DVR TIMELINE & ORDERED VIDEO PLAYBACK -----------------
 
-    async function setCamMode(camName, mode) {
-      const idx = CAM_NAMES.indexOf(camName);
-      const state = camStates[camName];
-      state.mode = mode;
-
-      const btnLive = document.getElementById(`btn_live_${idx}`);
-      const btnHist = document.getElementById(`btn_hist_${idx}`);
-      const histControls = document.getElementById(`hist_controls_${idx}`);
-      const scrubber = document.getElementById(`scrubber_container_${idx}`);
-      const osdFrame = document.getElementById(`osd_frame_info_${idx}`);
-
-      if (mode === "live") {
-        btnLive.className = "px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white shadow transition flex items-center gap-1";
-        btnHist.className = "px-2.5 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-800 transition flex items-center gap-1";
-        histControls.classList.add("hidden");
-        scrubber.classList.add("hidden");
-        osdFrame.innerText = "LIVE FEED";
-        
-        // Stop any autoplay
-        if (state.isPlaying) togglePlayHistory(camName);
-        
-        // Restore live image
-        document.getElementById(`img_${idx}`).src = state.lastLiveUrl;
-      } else {
-        btnHist.className = "px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-600 text-white shadow transition flex items-center gap-1";
-        btnLive.className = "px-2.5 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-800 transition flex items-center gap-1";
-        histControls.classList.remove("hidden");
-        scrubber.classList.remove("hidden");
-
-        // Load 5-minute screenshots
-        await loadCamScreenshots(camName);
-      }
-    }
-
-    async function loadCamScreenshots(camName) {
+    async function loadCamVideos(camName) {
       const idx = CAM_NAMES.indexOf(camName);
       const state = camStates[camName];
       const slider = document.getElementById(`slider_${idx}`);
-      const sliderLabel = document.getElementById(`slider_label_${idx}`);
+      const countEl = document.getElementById(`timeline_count_${idx}`);
 
       try {
-        const res = await fetch(`/api/screenshots?computer=${encodeURIComponent(camName)}`);
-        const data = await res.json();
-        state.screenshots = data.screenshots || [];
+        const res = await fetch(`/api/recordings?computer=${encodeURIComponent(camName)}`);
+        if (res.ok) {
+          const data = await res.json();
+          let recs = (data.recordings || []).filter(r => r.computer.toLowerCase() === camName.toLowerCase());
+          // Sort oldest to newest (chronological order)
+          recs.sort((a, b) => a.filename.localeCompare(b.filename));
+          state.videos = recs;
 
-        if (state.screenshots.length > 0) {
-          slider.max = state.screenshots.length - 1;
-          slider.value = state.screenshots.length - 1; // Start at latest
-          state.historyIndex = state.screenshots.length - 1;
-          showHistoryFrame(camName, state.historyIndex);
-        } else {
-          slider.max = 0;
-          slider.value = 0;
-          sliderLabel.innerText = "No snapshots";
-          document.getElementById(`osd_frame_info_${idx}`).innerText = "NO RECORDINGS (24h)";
+          if (slider) {
+            if (recs.length > 0) {
+              slider.max = recs.length - 1;
+              if (state.mode === "live") {
+                slider.value = recs.length - 1;
+              }
+              if (countEl) countEl.innerText = `${recs.length} Video${recs.length === 1 ? '' : 's'} (5-min)`;
+            } else {
+              slider.max = 0;
+              slider.value = 0;
+              if (countEl) countEl.innerText = "0 Videos";
+            }
+          }
         }
       } catch (e) {
-        console.error("Error loading screenshots:", e);
+        console.error("Error loading cam videos:", e);
       }
     }
 
-    function showHistoryFrame(camName, frameIndex) {
+    function onTimelineScrub(camName, value) {
+      const val = parseInt(value, 10);
+      playCamVideoAtIndex(camName, val);
+    }
+
+    function playCamVideoAtIndex(camName, index) {
       const idx = CAM_NAMES.indexOf(camName);
       const state = camStates[camName];
-      if (!state.screenshots || state.screenshots.length === 0) return;
+      if (!state.videos || state.videos.length === 0) return;
 
-      const item = state.screenshots[frameIndex];
-      if (!item) return;
+      if (index < 0) index = 0;
+      if (index >= state.videos.length) index = state.videos.length - 1;
+
+      state.mode = "playback";
+      state.videoIndex = index;
+      const rec = state.videos[index];
 
       const imgEl = document.getElementById(`img_${idx}`);
-      imgEl.src = item.url;
-
+      const vidEl = document.getElementById(`video_${idx}`);
       const slider = document.getElementById(`slider_${idx}`);
       const sliderLabel = document.getElementById(`slider_label_${idx}`);
       const osdFrame = document.getElementById(`osd_frame_info_${idx}`);
-
-      slider.value = frameIndex;
-      sliderLabel.innerText = `${item.time_label} (${frameIndex + 1}/${state.screenshots.length})`;
-      osdFrame.innerText = `PLAYBACK: ${item.created_at}`;
-    }
-
-    function onScrubberSlide(camName, value) {
-      const state = camStates[camName];
-      state.historyIndex = parseInt(value, 10);
-      showHistoryFrame(camName, state.historyIndex);
-    }
-
-    function stepHistory(camName, delta) {
-      const state = camStates[camName];
-      if (!state.screenshots || state.screenshots.length === 0) return;
-      let nextIdx = state.historyIndex + delta;
-      if (nextIdx < 0) nextIdx = 0;
-      if (nextIdx >= state.screenshots.length) nextIdx = state.screenshots.length - 1;
-      state.historyIndex = nextIdx;
-      showHistoryFrame(camName, nextIdx);
-    }
-
-    function togglePlayHistory(camName) {
-      const idx = CAM_NAMES.indexOf(camName);
-      const state = camStates[camName];
+      const btnLive = document.getElementById(`btn_live_${idx}`);
       const playBtn = document.getElementById(`btn_play_${idx}`);
 
-      if (state.isPlaying) {
-        clearInterval(autoPlayTimers[camName]);
-        state.isPlaying = false;
-        playBtn.innerHTML = '<i class="fa-solid fa-play text-[10px]"></i> Play';
-        playBtn.className = "px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded transition flex items-center gap-1";
-      } else {
-        if (!state.screenshots || state.screenshots.length === 0) return;
-        state.isPlaying = true;
-        playBtn.innerHTML = '<i class="fa-solid fa-pause text-[10px]"></i> Pause';
-        playBtn.className = "px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded transition flex items-center gap-1";
+      imgEl.classList.add("hidden");
+      vidEl.classList.remove("hidden");
+      vidEl.src = rec.url;
+      vidEl.play().catch(e => console.log("Play interrupted:", e));
+      state.isPlaying = true;
 
-        autoPlayTimers[camName] = setInterval(() => {
-          if (state.historyIndex >= state.screenshots.length - 1) {
-            state.historyIndex = 0; // Loop around
-          } else {
-            state.historyIndex += 1;
-          }
-          showHistoryFrame(camName, state.historyIndex);
-        }, 600); // 1.6 frames per second smooth reel
+      // Automatically play next 5-minute video in order when current finishes
+      vidEl.onended = () => {
+        if (state.videoIndex < state.videos.length - 1) {
+          playCamVideoAtIndex(camName, state.videoIndex + 1);
+        } else {
+          switchToLive(camName);
+        }
+      };
+
+      if (slider) slider.value = index;
+      if (sliderLabel) {
+        sliderLabel.innerText = `▶ ${rec.time_label || rec.created_at} (${index + 1}/${state.videos.length})`;
+        sliderLabel.className = "text-purple-400 font-bold";
+      }
+      if (osdFrame) osdFrame.innerText = `DVR PLAYBACK: ${rec.created_at}`;
+      if (btnLive) btnLive.className = "px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white transition flex items-center gap-1";
+      if (playBtn) playBtn.innerHTML = '<i class="fa-solid fa-pause text-[10px]"></i> Pause';
+    }
+
+    function switchToLive(camName) {
+      const idx = CAM_NAMES.indexOf(camName);
+      const state = camStates[camName];
+      state.mode = "live";
+      state.isPlaying = false;
+
+      const imgEl = document.getElementById(`img_${idx}`);
+      const vidEl = document.getElementById(`video_${idx}`);
+      const slider = document.getElementById(`slider_${idx}`);
+      const sliderLabel = document.getElementById(`slider_label_${idx}`);
+      const osdFrame = document.getElementById(`osd_frame_info_${idx}`);
+      const btnLive = document.getElementById(`btn_live_${idx}`);
+      const playBtn = document.getElementById(`btn_play_${idx}`);
+
+      if (vidEl) {
+        vidEl.pause();
+        vidEl.src = "";
+        vidEl.classList.add("hidden");
+      }
+      if (imgEl) {
+        imgEl.classList.remove("hidden");
+        imgEl.src = state.lastLiveUrl;
+      }
+
+      if (slider && state.videos && state.videos.length > 0) {
+        slider.value = state.videos.length - 1;
+      }
+      if (sliderLabel) {
+        sliderLabel.innerText = "🔴 LIVE FEED";
+        sliderLabel.className = "text-emerald-400 font-bold";
+      }
+      if (osdFrame) osdFrame.innerText = "LIVE FEED";
+      if (btnLive) btnLive.className = "px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white shadow transition flex items-center gap-1";
+      if (playBtn) playBtn.innerHTML = '<i class="fa-solid fa-play text-[10px]"></i> Play';
+    }
+
+    function stepVideo(camName, delta) {
+      const state = camStates[camName];
+      if (!state.videos || state.videos.length === 0) return;
+      playCamVideoAtIndex(camName, state.videoIndex + delta);
+    }
+
+    function togglePlayVideo(camName) {
+      const idx = CAM_NAMES.indexOf(camName);
+      const state = camStates[camName];
+      const vidEl = document.getElementById(`video_${idx}`);
+      const playBtn = document.getElementById(`btn_play_${idx}`);
+
+      if (state.mode === "live") {
+        if (!state.videos || state.videos.length === 0) return;
+        playCamVideoAtIndex(camName, state.videos.length - 1);
+        return;
+      }
+
+      if (vidEl.paused) {
+        vidEl.play();
+        state.isPlaying = true;
+        if (playBtn) playBtn.innerHTML = '<i class="fa-solid fa-pause text-[10px]"></i> Pause';
+      } else {
+        vidEl.pause();
+        state.isPlaying = false;
+        if (playBtn) playBtn.innerHTML = '<i class="fa-solid fa-play text-[10px]"></i> Play';
       }
     }
 
     function downloadCurrentSnapshot(camName) {
-      const idx = CAM_NAMES.indexOf(camName);
-      const state = camStates[camName];
-      let url = "";
-      let filename = `${camName}_snapshot.jpg`;
+      const url = `/api/live/${encodeURIComponent(camName)}`;
+      const filename = `${camName}_snapshot.jpg`;
 
-      if (state.mode === "live") {
-        url = `/api/live/${encodeURIComponent(camName)}`;
-      } else if (state.screenshots && state.screenshots[state.historyIndex]) {
-        url = state.screenshots[state.historyIndex].url;
-        filename = state.screenshots[state.historyIndex].filename;
-      }
-
-      if (url) {
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
     }
-
-    function toggleDownloadDropdown() {
-      const menu = document.getElementById("downloadDropdownMenu");
-      if (menu) menu.classList.toggle("hidden");
-    }
-
-    document.addEventListener("click", function(e) {
-      const btn = document.getElementById("downloadDropdownBtn");
-      const menu = document.getElementById("downloadDropdownMenu");
-      if (btn && menu && !btn.contains(e.target) && !menu.contains(e.target)) {
-        menu.classList.add("hidden");
-      }
-    });
 
     async function confirmShutdown(camName) {
       const pcTitle = camName.toUpperCase();
