@@ -572,8 +572,10 @@ def auto_updater_worker():
                         os.execl(python, python, *sys.argv)
                 except Exception:
                     pass
+                time.sleep(900)
+                continue
 
-            # 2. Universal OTA update: Download latest recorder.py directly from GitHub or Server
+            # 2. Universal OTA update for client PCs (No git needed)
             candidate_urls = [
                 "https://raw.githubusercontent.com/bayan313/cctv/main/client/recorder.py",
                 f"{SERVER_URL}/api/download/recorder.py",
