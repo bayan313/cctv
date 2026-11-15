@@ -569,10 +569,17 @@ if STATIC_DIR.exists():
 def register_client(request: Request, payload: dict):
     cfg = load_config()
     client_ip = request.client.host if request.client else "unknown"
-    device_id = payload.get("device_id", client_ip).strip()
+    device_id = str(payload.get("device_id") or client_ip).strip()
+    req_name = payload.get("computer_name")
 
     registered = cfg.get("registered_devices", {})
-    if device_id in registered:
+    if req_name and str(req_name).strip():
+        clean_name = normalize_pc_name(str(req_name))
+        registered[device_id] = clean_name
+        cfg["registered_devices"] = registered
+        save_config(cfg)
+        assigned_name = clean_name
+    elif device_id in registered:
         assigned_name = registered[device_id]
     else:
         used_names = set(registered.values())
@@ -734,10 +741,38 @@ echo [OK] Python detected: !PY_EXE!
 echo [OK] Silent runner:  !PYW_EXE!
 
 echo.
-echo [2/3] Downloading latest CCTV monitoring client...
+echo ========================================================
+echo   [CAMERA SLOT CONFIGURATION]
+echo ========================================================
+set "EXISTING_NAME="
+for /f "tokens=2*" %%A in ('reg query "HKCU\\Software\\AlbayanMonitor" /v ComputerName 2^>nul') do set "EXISTING_NAME=%%B"
+
+if defined EXISTING_NAME (
+    echo [OK] Permanent Camera Slot already locked as: !EXISTING_NAME!
+    set "PC_NAME=!EXISTING_NAME!"
+) else (
+    echo Choose camera slot for this computer:
+    echo   [1] albayan 1 (Camera Slot 1)
+    echo   [2] albayan 2 (Camera Slot 2)
+    echo   [3] albayan 3 (Camera Slot 3)
+    echo   [4] albayan 4 (Camera Slot 4)
+    echo.
+    set /p "CHOICE=Enter slot number [1, 2, 3, or 4] (Default 1): "
+    if "!CHOICE!"=="2" set "PC_NAME=albayan 2"
+    if "!CHOICE!"=="3" set "PC_NAME=albayan 3"
+    if "!CHOICE!"=="4" set "PC_NAME=albayan 4"
+    if not defined PC_NAME set "PC_NAME=albayan 1"
+)
+
+reg add "HKCU\\Software\\AlbayanMonitor" /v "ComputerName" /t REG_SZ /d "!PC_NAME!" /f >nul
+echo [OK] Camera Slot permanently locked as: !PC_NAME!
+
+echo.
+echo [2/4] Downloading latest CCTV monitoring client...
 powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('{server_base}/api/download/recorder.py', '%TARGET_DIR%\\client\\recorder.py')"
 (
     echo {{
+    echo   "computer_name": "!PC_NAME!",
     echo   "server_url": "{server_base}",
     echo   "api_secret": "secure_study_monitor_secret_key_8899",
     echo   "video_chunk_minutes": 5,
@@ -746,6 +781,12 @@ powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.Security
     echo   "send_videos_to_telegram": false
     echo }}
 ) > "%TARGET_DIR%\\client\\config.json"
+copy /y "%TARGET_DIR%\\client\\config.json" "%TARGET_DIR%\\client\\client_config.json" >nul
+(
+    echo {{
+    echo   "computer_name": "!PC_NAME!"
+    echo }}
+) > "%TARGET_DIR%\\client\\.device_identity.json"
 
 echo.
 echo [3/4] Installing necessary libraries (mss, pillow, requests, numpy, imageio)...
@@ -765,7 +806,7 @@ set "VBS_FILE=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Stud
 ) > "!VBS_FILE!" 2>nul
 
 :: 3. Create Desktop Shortcut for Control Panel (Start / Stop Recording with Password)
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws = New-Object -ComObject WScript.Shell; $d = [System.Environment]::GetFolderPath('Desktop'); $s = $ws.CreateShortcut((Join-Path $d 'Albayan CCTV Monitor.lnk')); $s.TargetPath = '!PYW_EXE!'; $s.Arguments = '\"%TARGET_DIR%\\client\\recorder.py\" --gui'; $s.WorkingDirectory = '%TARGET_DIR%\\client'; $s.IconLocation = 'shell32.dll,14'; $s.Description = 'Albayan CCTV Monitor - Control Panel'; $s.Save()" >nul 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws = New-Object -ComObject WScript.Shell; $d = (Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders' -Name 'Desktop' -ErrorAction SilentlyContinue).Desktop; if (-not $d) {{ $d = [System.Environment]::GetFolderPath('Desktop') }}; $d = [System.Environment]::ExpandEnvironmentVariables($d); $s = $ws.CreateShortcut((Join-Path $d 'Albayan CCTV Monitor.lnk')); $s.TargetPath = '!PYW_EXE!'; $s.Arguments = '\"%TARGET_DIR%\\client\\recorder.py\" --gui'; $s.WorkingDirectory = '%TARGET_DIR%\\client'; $s.IconLocation = 'shell32.dll,14'; $s.Description = 'Albayan CCTV Monitor - Control Panel'; $s.Save()" >nul 2>nul
 
 echo.
 echo Launching Screen Monitor in Background...
@@ -774,6 +815,7 @@ start "" "!PYW_EXE!" "%TARGET_DIR%\\client\\recorder.py"
 echo.
 echo ========================================================
 echo   [SUCCESS] SETUP COMPLETE!
+echo   - Camera Slot '!PC_NAME!' permanently assigned and locked.
 echo   - Screen Monitor is active in the background.
 echo   - Desktop icon 'Albayan CCTV Monitor' created!
 echo   - Double-click desktop icon to Start/Stop recording with password.
@@ -785,7 +827,7 @@ pause
     return Response(
         content=script_content,
         media_type="application/bat",
-        headers={"Content-Disposition": "attachment; filename=albayan_cctv_setup.bat"}
+        headers={"Content-Disposition": "attachment; filename=albayan_setup.bat"}
     )
 
 @app.get("/api/download/AlbayanMonitor.exe")

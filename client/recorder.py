@@ -138,25 +138,156 @@ def ensure_desktop_shortcut():
         print(f"[{COMPUTER_NAME}] Error creating desktop shortcut: {e}")
 
 DEFAULT_PC_NAMES = ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]
+IDENTITY_FILE = CLIENT_DIR / ".device_identity.json"
 
 def normalize_pc_name(name: str) -> str:
-    clean = name.strip()
+    clean = str(name).strip()
     c_up = clean.upper()
-    if c_up in ["PC-01", "PC-1", "PC1"]:
+    if c_up in ["PC-01", "PC-1", "PC1", "ALBAYAN 1"]:
         return "albayan 1"
-    if c_up in ["PC-02", "PC-2", "PC2"]:
+    if c_up in ["PC-02", "PC-2", "PC2", "ALBAYAN 2"]:
         return "albayan 2"
-    if c_up in ["PC-03", "PC-3", "PC3"]:
+    if c_up in ["PC-03", "PC-3", "PC3", "ALBAYAN 3"]:
         return "albayan 3"
-    if c_up in ["PC-04", "PC-4", "PC4"]:
+    if c_up in ["PC-04", "PC-4", "PC4", "ALBAYAN 4"]:
         return "albayan 4"
-    return clean
+    return clean.lower()
 
-def get_machine_id():
+def get_machine_id() -> str:
+    """Returns permanent, immutable hardware Machine ID for this physical PC."""
+    # 1. Official Windows MachineGuid from Registry (Permanent across all reboots & updates)
+    if os.name == "nt":
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
+            val, _ = winreg.QueryValueEx(key, "MachineGuid")
+            winreg.CloseKey(key)
+            if val and len(str(val)) > 8:
+                return str(val).strip().lower()
+        except Exception:
+            pass
+
+        # 2. Try stored AlbayanMonitor MachineId in HKCU
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\AlbayanMonitor", 0, winreg.KEY_READ)
+            val, _ = winreg.QueryValueEx(key, "MachineId")
+            winreg.CloseKey(key)
+            if val and len(str(val)) > 4:
+                return str(val).strip().lower()
+        except Exception:
+            pass
+
+    # 3. Hardware node fallback & persist to registry
     try:
-        return str(uuid.getnode())
+        node = str(uuid.getnode())
+        host = socket.gethostname().lower()
+        stable_id = f"{host}-{node}"
+        if os.name == "nt":
+            try:
+                import winreg
+                k = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\AlbayanMonitor")
+                winreg.SetValueEx(k, "MachineId", 0, winreg.REG_SZ, stable_id)
+                winreg.CloseKey(k)
+            except Exception:
+                pass
+        return stable_id
     except Exception:
-        return socket.gethostname()
+        return "device_albayan_unknown"
+
+def get_permanent_pc_name() -> Optional[str]:
+    """Retrieves the permanently locked computer name for this PC."""
+    # 1. Check Windows Registry (Highest priority, immune to file deletion)
+    if os.name == "nt":
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\AlbayanMonitor", 0, winreg.KEY_READ)
+            val, _ = winreg.QueryValueEx(key, "ComputerName")
+            winreg.CloseKey(key)
+            if val and str(val).strip():
+                return normalize_pc_name(str(val))
+        except Exception:
+            pass
+
+    # 2. Check local client_config.json
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                c = json.load(f)
+                if c.get("computer_name"):
+                    return normalize_pc_name(c["computer_name"])
+        except Exception:
+            pass
+
+    # 3. Check config.json in client dir
+    local_cfg = CLIENT_DIR / "config.json"
+    if local_cfg.exists():
+        try:
+            with open(local_cfg, "r", encoding="utf-8") as f:
+                c = json.load(f)
+                if c.get("computer_name"):
+                    return normalize_pc_name(c["computer_name"])
+        except Exception:
+            pass
+
+    # 4. Check persistent .device_identity.json
+    if IDENTITY_FILE.exists():
+        try:
+            with open(IDENTITY_FILE, "r", encoding="utf-8") as f:
+                c = json.load(f)
+                if c.get("computer_name"):
+                    return normalize_pc_name(c["computer_name"])
+        except Exception:
+            pass
+
+    return None
+
+def save_permanent_pc_name(name: str):
+    """Permanently locks in the computer name across Registry and all config stores."""
+    clean = normalize_pc_name(name)
+    # 1. Save to Windows Registry
+    if os.name == "nt":
+        try:
+            import winreg
+            k = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\AlbayanMonitor")
+            winreg.SetValueEx(k, "ComputerName", 0, winreg.REG_SZ, clean)
+            winreg.CloseKey(k)
+        except Exception as e:
+            print(f"[Identity] Registry save notice: {e}")
+
+    # 2. Save to client_config.json
+    try:
+        cur_cfg = {}
+        if CONFIG_PATH.exists():
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cur_cfg = json.load(f)
+        cur_cfg["computer_name"] = clean
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cur_cfg, f, indent=2)
+    except Exception:
+        pass
+
+    # 3. Save to config.json
+    try:
+        local_cfg = CLIENT_DIR / "config.json"
+        cur_cfg2 = {}
+        if local_cfg.exists():
+            with open(local_cfg, "r", encoding="utf-8") as f:
+                cur_cfg2 = json.load(f)
+        cur_cfg2["computer_name"] = clean
+        with open(local_cfg, "w", encoding="utf-8") as f:
+            json.dump(cur_cfg2, f, indent=2)
+    except Exception:
+        pass
+
+    # 4. Save to .device_identity.json
+    try:
+        with open(IDENTITY_FILE, "w", encoding="utf-8") as f:
+            json.dump({"computer_name": clean, "device_id": get_machine_id(), "locked_at": time.time()}, f, indent=2)
+    except Exception:
+        pass
+
+    print(f"🔒 [Identity] Computer Name PERMANENTLY LOCKED as: [{clean}]")
 
 def discover_server_url():
     candidates = []
@@ -218,16 +349,23 @@ def discover_server_url():
 def auto_register_pc():
     dev_id = get_machine_id()
     srv_url = discover_server_url()
+    existing_name = get_permanent_pc_name()
+
     try:
+        payload = {"device_id": dev_id}
+        if existing_name:
+            payload["computer_name"] = existing_name
+
         res = requests.post(
             f"{srv_url}/api/client/register",
-            json={"device_id": dev_id},
+            json=payload,
             timeout=5
         )
         if res.status_code == 200:
             data = res.json()
-            raw_name = data.get("computer_name", "albayan 1")
-            clean_name = normalize_pc_name(raw_name)
+            assigned = existing_name or data.get("computer_name", "albayan 1")
+            clean_name = normalize_pc_name(assigned)
+            save_permanent_pc_name(clean_name)
             cfg = {
                 "computer_name": clean_name,
                 "server_url": srv_url,
@@ -235,15 +373,14 @@ def auto_register_pc():
                 "screenshot_interval_seconds": 300,
                 "live_stream_interval_seconds": 5
             }
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-            print(f"[Register] Auto-assigned Computer Name: {cfg['computer_name']}")
             return cfg
     except Exception as e:
-        print(f"[Register] Server connect error, using local default: {e}")
+        print(f"[Register] Server connect notice: {e}")
 
+    default_name = existing_name or "albayan 1"
+    save_permanent_pc_name(default_name)
     return {
-        "computer_name": "albayan 1",
+        "computer_name": default_name,
         "server_url": srv_url,
         "api_secret": "secure_study_monitor_secret_key_8899",
         "screenshot_interval_seconds": 300,
@@ -251,12 +388,17 @@ def auto_register_pc():
     }
 
 def load_config():
+    permanent_name = get_permanent_pc_name()
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
-                if cfg.get("computer_name"):
+                if permanent_name:
+                    cfg["computer_name"] = permanent_name
+                elif cfg.get("computer_name"):
                     cfg["computer_name"] = normalize_pc_name(cfg["computer_name"])
+                    save_permanent_pc_name(cfg["computer_name"])
+                if cfg.get("computer_name"):
                     return cfg
         except Exception:
             pass
@@ -904,7 +1046,12 @@ def run_control_gui():
         tk.Label(row, text=label_text, font=("Segoe UI", 9), fg="#94a3b8", bg="#1e293b").pack(side="left")
         tk.Label(row, text=val_text, font=("Segoe UI", 9, "bold"), fg=val_color, bg="#1e293b").pack(side="right")
 
-    make_info_row(card, "🖥️ Computer Name:", COMPUTER_NAME.upper(), "#38bdf8")
+    row_name = tk.Frame(card, bg="#1e293b")
+    row_name.pack(fill="x", pady=2)
+    tk.Label(row_name, text="🖥️ Computer Name:", font=("Segoe UI", 9), fg="#94a3b8", bg="#1e293b").pack(side="left")
+    name_lbl = tk.Label(row_name, text=f"{COMPUTER_NAME.upper()} (Locked)", font=("Segoe UI", 9, "bold"), fg="#38bdf8", bg="#1e293b")
+    name_lbl.pack(side="right")
+
     make_info_row(card, "🌐 Web Surveillance:", "Connected (Cloud)", "#10b981")
     make_info_row(card, "📹 Video Retention:", f"24 Hours Continuous ({CHUNK_MINUTES}m clips)", "#f8fafc")
 
@@ -954,7 +1101,7 @@ def run_control_gui():
 
         lbl = tk.Label(
             dialog,
-            text=f"🔒 Enter Admin Password to {action_name} recording:",
+            text=f"🔒 Enter Admin Password to {action_name}:",
             font=("Segoe UI", 10, "bold"),
             fg="#f8fafc",
             bg="#0f172a",
@@ -1028,16 +1175,104 @@ def run_control_gui():
         return result["success"]
 
     def do_stop():
-        if prompt_password("STOP"):
+        if prompt_password("STOP recording"):
             set_recording_state(False)
             update_status_ui()
             messagebox.showinfo("CCTV Control", "⏹ Recording and live stream have been PAUSED.\n\nStatus: STOPPED")
 
     def do_start():
-        if prompt_password("START"):
+        if prompt_password("START recording"):
             set_recording_state(True)
             update_status_ui()
             messagebox.showinfo("CCTV Control", "▶ Recording and live stream have been RESUMED.\n\nStatus: ACTIVE")
+
+    def do_rename():
+        if prompt_password("LOCK / RENAME Camera"):
+            rndlg = tk.Toplevel(root)
+            rndlg.title("Permanent Camera Name")
+            rndlg.geometry("400x260")
+            rndlg.configure(bg="#0f172a")
+            rndlg.transient(root)
+            rndlg.grab_set()
+            rndlg.resizable(False, False)
+
+            dx = x + (w - 400) // 2
+            dy = y + (h - 260) // 2
+            rndlg.geometry(f"+{dx}+{dy}")
+
+            tk.Label(
+                rndlg,
+                text="🔒 Select Permanent Camera Slot:",
+                font=("Segoe UI", 10, "bold"),
+                fg="#f8fafc",
+                bg="#0f172a"
+            ).pack(pady=(16, 8))
+
+            choice_var = tk.StringVar(value=COMPUTER_NAME)
+
+            btn_grid = tk.Frame(rndlg, bg="#0f172a")
+            btn_grid.pack(pady=4)
+
+            for opt in ["albayan 1", "albayan 2", "albayan 3", "albayan 4"]:
+                tk.Radiobutton(
+                    btn_grid,
+                    text=opt.upper(),
+                    variable=choice_var,
+                    value=opt,
+                    font=("Segoe UI", 9, "bold"),
+                    fg="#38bdf8",
+                    bg="#0f172a",
+                    selectcolor="#1e293b",
+                    activebackground="#0f172a",
+                    activeforeground="#38bdf8"
+                ).pack(side="left", padx=4)
+
+            tk.Label(
+                rndlg,
+                text="Or type custom computer name:",
+                font=("Segoe UI", 8),
+                fg="#94a3b8",
+                bg="#0f172a"
+            ).pack(pady=(6, 2))
+
+            custom_entry = tk.Entry(
+                rndlg,
+                textvariable=choice_var,
+                font=("Segoe UI", 11),
+                bg="#1e293b",
+                fg="#f8fafc",
+                justify="center",
+                relief="solid",
+                highlightthickness=1,
+                highlightbackground="#475569"
+            )
+            custom_entry.pack(pady=4, padx=30, fill="x")
+
+            def on_save_rename():
+                new_val = choice_var.get().strip()
+                if new_val:
+                    clean = normalize_pc_name(new_val)
+                    save_permanent_pc_name(clean)
+                    global COMPUTER_NAME
+                    COMPUTER_NAME = clean
+                    name_lbl.config(text=f"{clean.upper()} (Locked)")
+                    root.title(f"Albayan CCTV Monitor - [{clean.upper()}]")
+                    try:
+                        requests.post(
+                            f"{SERVER_URL}/api/client/register",
+                            json={"device_id": get_machine_id(), "computer_name": clean},
+                            timeout=5
+                        )
+                    except Exception:
+                        pass
+                    rndlg.destroy()
+                    messagebox.showinfo("CCTV Control", f"✅ Camera Name successfully LOCKED as:\n\n[{clean.upper()}]\n\nThis name will remain permanently fixed across all reboots!")
+
+            btn_r = tk.Frame(rndlg, bg="#0f172a")
+            btn_r.pack(pady=10)
+
+            tk.Button(btn_r, text="Lock & Save Name", command=on_save_rename, font=("Segoe UI", 9, "bold"), bg="#10b981", fg="#ffffff", padx=16, pady=4, relief="flat", cursor="hand2").pack(side="left", padx=6)
+            tk.Button(btn_r, text="Cancel", command=rndlg.destroy, font=("Segoe UI", 9), bg="#334155", fg="#cbd5e1", padx=14, pady=4, relief="flat", cursor="hand2").pack(side="left", padx=6)
 
     def do_open_web():
         webbrowser.open(SERVER_URL if "vercel" in SERVER_URL else "https://cctv-lac-two.vercel.app")
@@ -1056,12 +1291,12 @@ def run_control_gui():
         fg="#ffffff",
         activebackground="#b91c1c",
         activeforeground="#ffffff",
-        pady=8,
+        pady=7,
         relief="flat",
         cursor="hand2",
         command=do_stop
     )
-    btn_stop.pack(fill="x", pady=4)
+    btn_stop.pack(fill="x", pady=3)
 
     btn_start = tk.Button(
         btn_frame,
@@ -1071,27 +1306,42 @@ def run_control_gui():
         fg="#ffffff",
         activebackground="#15803d",
         activeforeground="#ffffff",
-        pady=8,
+        pady=7,
         relief="flat",
         cursor="hand2",
         command=do_start
     )
-    btn_start.pack(fill="x", pady=4)
+    btn_start.pack(fill="x", pady=3)
 
-    btn_web = tk.Button(
+    btn_rename = tk.Button(
         btn_frame,
-        text="🌐  VIEW CCTV WEB PORTAL",
+        text="✏️  LOCK / RENAME CAMERA (Password Required)",
         font=("Segoe UI", 9, "bold"),
         bg="#1e293b",
         fg="#38bdf8",
         activebackground="#334155",
         activeforeground="#38bdf8",
-        pady=6,
+        pady=5,
+        relief="flat",
+        cursor="hand2",
+        command=do_rename
+    )
+    btn_rename.pack(fill="x", pady=3)
+
+    btn_web = tk.Button(
+        btn_frame,
+        text="🌐  VIEW CCTV WEB PORTAL",
+        font=("Segoe UI", 9),
+        bg="#0f172a",
+        fg="#94a3b8",
+        activebackground="#1e293b",
+        activeforeground="#cbd5e1",
+        pady=5,
         relief="flat",
         cursor="hand2",
         command=do_open_web
     )
-    btn_web.pack(fill="x", pady=4)
+    btn_web.pack(fill="x", pady=3)
 
     btn_min = tk.Button(
         btn_frame,
